@@ -45,3 +45,25 @@ export async function searchPlaces(query: string, signal?: AbortSignal): Promise
     }
   })
 }
+
+// Look up an address for a GPS fix, used for the "current location" shortcut.
+export async function reverseGeocode(lat: number, lon: number): Promise<Place> {
+  const url = new URL('https://nominatim.openstreetmap.org/reverse')
+  url.searchParams.set('lat', String(lat))
+  url.searchParams.set('lon', String(lon))
+  url.searchParams.set('format', 'jsonv2')
+  url.searchParams.set('addressdetails', '1')
+
+  const res = await fetch(url, { headers: { Accept: 'application/json' } })
+  if (!res.ok) throw new Error('Reverse geocoding failed')
+  const d = await res.json()
+  const a = d.address ?? {}
+  const name = d.name || a.road || a.neighbourhood || a.suburb || 'Current location'
+  const area = a.suburb || a.city_district || a.town || a.city || 'London'
+  return {
+    label: (d.display_name as string) || 'Current location',
+    short: area && name !== area ? `${name}, ${area}` : name,
+    lat,
+    lon,
+  }
+}

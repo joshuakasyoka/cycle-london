@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { X } from 'lucide-react'
+import { LocateFixed, X } from 'lucide-react'
 import { searchPlaces, type Place } from '../services/geocode'
 
 interface Props {
@@ -7,9 +7,11 @@ interface Props {
   placeholder: string
   value: Place | null
   onChange: (place: Place | null) => void
+  onLocate?: () => void
+  locating?: boolean
 }
 
-export default function LocationInput({ icon, placeholder, value, onChange }: Props) {
+export default function LocationInput({ icon, placeholder, value, onChange, onLocate, locating }: Props) {
   const [text, setText] = useState('')
   const [results, setResults] = useState<Place[]>([])
   const [open, setOpen] = useState(false)
@@ -89,6 +91,17 @@ export default function LocationInput({ icon, placeholder, value, onChange }: Pr
           }}
         >
           <X size={14} />
+        </button>
+      )}
+      {!text && onLocate && (
+        <button
+          className={`loc-locate ${locating ? 'loc-locate--busy' : ''}`}
+          aria-label="Use current location"
+          title="Use current location"
+          disabled={locating}
+          onClick={onLocate}
+        >
+          <LocateFixed size={15} />
         </button>
       )}
       {open && (results.length > 0 || loading) && (

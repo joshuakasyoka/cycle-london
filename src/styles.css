@@ -35,13 +35,10 @@ body { background: var(--bg); color: var(--text); overscroll-behavior: none; }
 }
 .leaflet-control-attribution a { color: #cfd2da !important; }
 
-.pin {
-  width: 30px; height: 30px; border-radius: 50% 50% 50% 0;
-  background: var(--pin); transform: rotate(-45deg);
+.pin-lucide {
   display: grid; place-items: center;
-  border: 2px solid #0a0a0c; box-shadow: 0 3px 10px rgba(0,0,0,.55);
+  filter: drop-shadow(0 3px 6px rgba(0,0,0,.55));
 }
-.pin span { transform: rotate(45deg); color: #0a0a0c; font-weight: 800; font-size: 13px; }
 .cyclist {
   width: 34px; height: 34px; display: grid; place-items: center;
   color: #fbbf24;
@@ -97,6 +94,14 @@ body { background: var(--bg); color: var(--text); overscroll-behavior: none; }
   border: 0; border-radius: 50%; background: var(--surface-3); color: var(--muted);
   display: grid; place-items: center; cursor: pointer;
 }
+.loc-locate {
+  position: absolute; right: 8px; width: 26px; height: 26px;
+  border: 0; border-radius: 50%; background: var(--surface-3); color: var(--accent);
+  display: grid; place-items: center; cursor: pointer; transition: background .15s, color .15s;
+}
+.loc-locate:hover { background: var(--surface-2); }
+.loc-locate--busy { color: var(--muted); animation: spin .9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 .loc-list {
   position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 30;
@@ -163,20 +168,28 @@ body { background: var(--bg); color: var(--text); overscroll-behavior: none; }
 .stat-value { font-size: 18px; font-weight: 800; color: var(--accent); }
 .stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
 
-.result-actions { display: grid; grid-template-columns: 2fr 1fr; gap: 8px; margin-top: 10px; }
+.result-actions { display: grid; gap: 10px; margin-top: 14px; }
 .start-ride {
-  padding: 14px; border-radius: 999px; border: 1px solid transparent;
-  background: var(--accent); color: var(--accent-ink); font-size: 15px; font-weight: 800; cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  transition: filter .15s;
+  padding: 17px; border-radius: 999px; border: 1px solid transparent;
+  background: var(--accent); color: var(--accent-ink); font-size: 17px; font-weight: 800; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  box-shadow: 0 6px 22px rgba(92, 242, 122, .3);
+  animation: start-pulse 2.2s ease-in-out infinite;
+  transition: filter .15s, transform .05s;
 }
 .start-ride:hover { filter: brightness(1.08); }
-.trace {
-  padding: 14px 12px; border-radius: 999px;
-  border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
-  font-size: 14.5px; font-weight: 700; cursor: pointer; transition: background .15s, border-color .15s;
+.start-ride:active { transform: scale(.99); }
+@keyframes start-pulse {
+  0%, 100% { box-shadow: 0 6px 22px rgba(92, 242, 122, .25); }
+  50% { box-shadow: 0 10px 32px rgba(92, 242, 122, .55); }
 }
-.trace:hover { background: var(--surface-3); border-color: var(--border-strong); }
+.trace {
+  padding: 8px; border: 0; border-radius: 999px; background: none; color: var(--muted);
+  font-size: 13.5px; font-weight: 700; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  transition: color .15s;
+}
+.trace:hover { color: var(--text); }
 
 /* ---------- Live position arrow (satnav) ---------- */
 .nav-pos {

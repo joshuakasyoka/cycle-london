@@ -21,12 +21,15 @@ interface Props {
 
 const LONDON_CENTER: L.LatLngExpression = [51.5074, -0.1278]
 
-function pinIcon(color: string, glyph: string) {
+const PIN_SVG = (color: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="${color}" stroke="#0a0a0c" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"/><circle cx="12" cy="10" r="3"/></svg>`
+
+function pinIcon(color: string) {
   return L.divIcon({
     className: 'pin-wrap',
-    html: `<div class="pin" style="--pin:${color}"><span>${glyph}</span></div>`,
+    html: `<div class="pin-lucide">${PIN_SVG(color)}</div>`,
     iconSize: [30, 30],
-    iconAnchor: [15, 30],
+    iconAnchor: [15, 28],
   })
 }
 
@@ -62,9 +65,35 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
   const navMarker = useRef<L.Marker | null>(null)
   const followRef = useRef(true)
   const navigatingRef = useRef(navigating)
+  const deviceHeadingRef = useRef<number | null>(null)
   const [showRecenter, setShowRecenter] = useState(false)
 
   useEffect(() => { navigatingRef.current = navigating }, [navigating])
+
+  // While navigating, point the position arrow at the compass heading of the
+  // phone itself (i.e. the direction it's physically facing) rather than the
+  // route's travel direction.
+  useEffect(() => {
+    if (!navigating) {
+      deviceHeadingRef.current = null
+      return
+    }
+
+    function onOrientation(e: DeviceOrientationEvent) {
+      const webkitHeading = (e as DeviceOrientationEvent & { webkitCompassHeading?: number })
+        .webkitCompassHeading
+      const heading = typeof webkitHeading === 'number' ? webkitHeading : e.alpha != null ? 360 - e.alpha : null
+      if (heading == null) return
+
+      deviceHeadingRef.current = heading
+      const arrow = navMarker.current?.getElement()?.querySelector<HTMLElement>('.nav-pos-arrow')
+      if (arrow) arrow.style.transform = `rotate(${heading - 45}deg)`
+    }
+
+    const eventName = 'ondeviceorientationabsolute' in window ? 'deviceorientationabsolute' : 'deviceorientation'
+    window.addEventListener(eventName, onOrientation as EventListener)
+    return () => window.removeEventListener(eventName, onOrientation as EventListener)
+  }, [navigating])
 
   // Create the map once.
   useEffect(() => {
@@ -122,7 +151,7 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
     startMarker.current?.remove()
     startMarker.current = null
     if (start) {
-      startMarker.current = L.marker([start.lat, start.lon], { icon: pinIcon('#5cf27a', 'A') })
+      startMarker.current = L.marker([start.lat, start.lon], { icon: pinIcon('#5cf27a') })
         .addTo(map)
         .bindTooltip(start.short, { direction: 'top', offset: [0, -28] })
     }
@@ -130,7 +159,7 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
     endMarker.current?.remove()
     endMarker.current = null
     if (end) {
-      endMarker.current = L.marker([end.lat, end.lon], { icon: pinIcon('#ff6b6b', 'B') })
+      endMarker.current = L.marker([end.lat, end.lon], { icon: pinIcon('#ff6b6b') })
         .addTo(map)
         .bindTooltip(end.short, { direction: 'top', offset: [0, -28] })
     }
@@ -252,8 +281,11 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
       }
     }
     const arrow = navMarker.current.getElement()?.querySelector<HTMLElement>('.nav-pos-arrow')
+    // Prefer the phone's own compass heading; fall back to the route's travel
+    // direction when orientation data isn't available (e.g. desktop browsers).
+    const heading = deviceHeadingRef.current ?? navPosition.heading
     // The lucide "navigation" glyph points north-east by default, so offset by -45deg.
-    if (arrow) arrow.style.transform = `rotate(${navPosition.heading - 45}deg)`
+    if (arrow) arrow.style.transform = `rotate(${heading - 45}deg)`
   }, [navigating, navPosition])
 
   function recenter() {

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowUpDown, Bike, MapPin, Play } from 'lucide-react'
+import { ArrowUpDown, Bike, Eye, MapPin, Play } from 'lucide-react'
 import LocationInput from './components/LocationInput'
 import MapView from './components/MapView'
 import NavOverlay, { type GpsStatus } from './components/NavOverlay'
-import type { Place } from './services/geocode'
+import { reverseGeocode, type Place } from './services/geocode'
 import {
   fetchRoute,
   ROUTE_MODES,
@@ -34,6 +34,7 @@ export default function App() {
   const [error, setError]     = useState<string | null>(null)
   const [traceToken, setTraceToken] = useState(0)
   const [collapsed, setCollapsed]   = useState(false)
+  const [locating, setLocating]     = useState(false)
 
   // Navigation state
   const [navigating, setNavigating] = useState(false)
@@ -113,6 +114,26 @@ export default function App() {
     setStart(end); setEnd(start); setRoute(null)
   }
 
+  // ── "Use my location" for the start field ─────────────────────────────────
+  function useMyLocation() {
+    if (!('geolocation' in navigator)) return
+    setLocating(true)
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude } = pos.coords
+        try {
+          setStart(await reverseGeocode(latitude, longitude))
+        } catch {
+          setStart({ label: 'Current location', short: 'Current location', lat: latitude, lon: longitude })
+        } finally {
+          setLocating(false)
+        }
+      },
+      () => setLocating(false),
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 },
+    )
+  }
+
   function pickProfile(p: BikeProfile) {
     setProfile(p)
     if (start && end) findRoute(p)
@@ -156,6 +177,16 @@ export default function App() {
   // ── Start ride ─────────────────────────────────────────────────────────────
   function startRide() {
     if (!route) return
+
+    // iOS requires the compass permission prompt to be triggered directly by
+    // a user gesture — request it here so the satnav arrow can use it.
+    const DOE = window.DeviceOrientationEvent as unknown as {
+      requestPermission?: () => Promise<'granted' | 'denied'>
+    }
+    if (typeof DOE?.requestPermission === 'function') {
+      DOE.requestPermission().catch(() => {})
+    }
+
     const nav = buildNavRoute(route.coordinates)
     navRouteRef.current = nav
     announcedRef.current = new Set()
@@ -299,6 +330,8 @@ export default function App() {
               placeholder="Start — e.g. King's Cross"
               value={start}
               onChange={setStart}
+              onLocate={useMyLocation}
+              locating={locating}
             />
             <button className="swap" onClick={swap} aria-label="Swap start and end" title="Swap">
               <ArrowUpDown size={16} />
@@ -338,8 +371,12 @@ export default function App() {
                 <Stat value={`${Math.round(route.ascentM)} m`} label="Climb" />
               </div>
               <div className="result-actions">
-                <button className="start-ride" onClick={startRide}><Play size={16} fill="currentColor" /> Start ride</button>
-                <button className="trace" onClick={() => setTraceToken(t => t + 1)}>Preview</button>
+                <button className="start-ride" onClick={startRide}>
+                  <Play size={20} fill="currentColor" /> Start ride
+                </button>
+                <button className="trace" onClick={() => setTraceToken(t => t + 1)}>
+                  <Eye size={14} /> Preview route
+                </button>
               </div>
             </div>
           )}
