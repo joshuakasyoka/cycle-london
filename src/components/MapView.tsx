@@ -55,6 +55,7 @@ const navArrowIcon = L.divIcon({
 
 export default function MapView({ start, end, route, traceToken, navigating, navPosition }: Props) {
   const elRef = useRef<HTMLDivElement>(null)
+  const rotorRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
   const startMarker = useRef<L.Marker | null>(null)
   const endMarker = useRef<L.Marker | null>(null)
@@ -70,9 +71,18 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
 
   useEffect(() => { navigatingRef.current = navigating }, [navigating])
 
-  // While navigating, point the position arrow at the compass heading of the
-  // phone itself (i.e. the direction it's physically facing) rather than the
-  // route's travel direction.
+  // Point the position arrow in the given compass direction, and rotate the
+  // whole map so that direction faces "up" the screen — a track-up satnav view.
+  function applyHeading(heading: number) {
+    const arrow = navMarker.current?.getElement()?.querySelector<HTMLElement>('.nav-pos-arrow')
+    // The lucide "navigation" glyph points north-east by default, so offset by -45deg.
+    if (arrow) arrow.style.transform = `rotate(${heading - 45}deg)`
+    if (rotorRef.current) rotorRef.current.style.transform = `rotate(${-heading}deg)`
+  }
+
+  // While navigating, point the position arrow — and the map itself — at the
+  // compass heading of the phone (i.e. the direction it's physically facing)
+  // rather than the route's travel direction.
   useEffect(() => {
     if (!navigating) {
       deviceHeadingRef.current = null
@@ -86,8 +96,7 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
       if (heading == null) return
 
       deviceHeadingRef.current = heading
-      const arrow = navMarker.current?.getElement()?.querySelector<HTMLElement>('.nav-pos-arrow')
-      if (arrow) arrow.style.transform = `rotate(${heading - 45}deg)`
+      applyHeading(heading)
     }
 
     const eventName = 'ondeviceorientationabsolute' in window ? 'deviceorientationabsolute' : 'deviceorientation'
@@ -260,6 +269,16 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
       navMarker.current = null
       followRef.current = true
       setShowRecenter(false)
+      if (rotorRef.current) rotorRef.current.style.transform = 'rotate(0deg)'
+
+      // Leaving track-up mode shrinks the map container back down — restore
+      // the view so the same spot stays centred.
+      const center = map.getCenter()
+      const zoom = map.getZoom()
+      requestAnimationFrame(() => {
+        map.invalidateSize()
+        map.setView(center, zoom, { animate: false })
+      })
       return
     }
 
@@ -273,19 +292,21 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
     const ll = L.latLng(navPosition.lat, navPosition.lng)
     if (!navMarker.current) {
       navMarker.current = L.marker(ll, { icon: navArrowIcon, zIndexOffset: 2000 }).addTo(map)
-      map.setView(ll, 17, { animate: true })
+      // Entering track-up mode grows the map container to cover the rotated
+      // viewport — resync Leaflet's size before centring on the rider.
+      requestAnimationFrame(() => {
+        map.invalidateSize()
+        map.setView(ll, 17, { animate: true })
+      })
     } else {
       navMarker.current.setLatLng(ll)
       if (followRef.current) {
         map.panTo(ll, { animate: true, duration: 0.3 })
       }
     }
-    const arrow = navMarker.current.getElement()?.querySelector<HTMLElement>('.nav-pos-arrow')
     // Prefer the phone's own compass heading; fall back to the route's travel
     // direction when orientation data isn't available (e.g. desktop browsers).
-    const heading = deviceHeadingRef.current ?? navPosition.heading
-    // The lucide "navigation" glyph points north-east by default, so offset by -45deg.
-    if (arrow) arrow.style.transform = `rotate(${heading - 45}deg)`
+    applyHeading(deviceHeadingRef.current ?? navPosition.heading)
   }, [navigating, navPosition])
 
   function recenter() {
@@ -298,7 +319,11 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
 
   return (
     <>
-      <div ref={elRef} className="map" />
+      <div className="map">
+        <div ref={rotorRef} className={`map-rotor ${navigating ? 'map-rotor--tracking' : ''}`}>
+          <div ref={elRef} className="map-inner" />
+        </div>
+      </div>
       {navigating && showRecenter && (
         <button
           className="recenter-btn"

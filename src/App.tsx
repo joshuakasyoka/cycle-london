@@ -4,12 +4,7 @@ import LocationInput from './components/LocationInput'
 import MapView from './components/MapView'
 import NavOverlay, { type GpsStatus } from './components/NavOverlay'
 import { reverseGeocode, type Place } from './services/geocode'
-import {
-  fetchRoute,
-  ROUTE_MODES,
-  type BikeProfile,
-  type RouteResult,
-} from './services/route'
+import { fetchRoute, type RouteResult } from './services/route'
 import {
   buildNavRoute,
   formatDistance,
@@ -28,7 +23,6 @@ export default function App() {
   // Planner state
   const [start, setStart]     = useState<Place | null>(null)
   const [end, setEnd]         = useState<Place | null>(null)
-  const [profile, setProfile] = useState<BikeProfile>('safety')
   const [route, setRoute]     = useState<RouteResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState<string | null>(null)
@@ -93,12 +87,12 @@ export default function App() {
   }, [speak])
 
   // ── Planner ────────────────────────────────────────────────────────────────
-  async function findRoute(p: BikeProfile = profile) {
+  async function findRoute() {
     if (!start || !end) return
     setLoading(true)
     setError(null)
     try {
-      const r = await fetchRoute(start, end, p)
+      const r = await fetchRoute(start, end)
       setRoute(r)
       setTraceToken(t => t + 1)
       setCollapsed(true)
@@ -132,11 +126,6 @@ export default function App() {
       () => setLocating(false),
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 },
     )
-  }
-
-  function pickProfile(p: BikeProfile) {
-    setProfile(p)
-    if (start && end) findRoute(p)
   }
 
   // ── GPS position handler ───────────────────────────────────────────────────
@@ -342,19 +331,6 @@ export default function App() {
               value={end}
               onChange={setEnd}
             />
-          </div>
-
-          <div className="modes">
-            {ROUTE_MODES.map(m => (
-              <button
-                key={m.id}
-                className={`mode ${profile === m.id ? 'mode--on' : ''}`}
-                onClick={() => pickProfile(m.id)}
-              >
-                <span className="mode-label">{m.label}</span>
-                <span className="mode-blurb">{m.blurb}</span>
-              </button>
-            ))}
           </div>
 
           <button className="cta" disabled={!start || !end || loading} onClick={() => findRoute()}>
