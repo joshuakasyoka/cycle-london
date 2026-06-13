@@ -234,6 +234,17 @@ body { background: var(--bg); color: var(--text); overscroll-behavior: none; }
   0%, 100% { opacity: 1; } 50% { opacity: .45; }
 }
 
+/* ---------- Recenter button ---------- */
+.recenter-btn {
+  position: absolute; right: 16px; z-index: 21;
+  bottom: calc(110px + env(safe-area-inset-bottom));
+  width: 46px; height: 46px; border-radius: 50%;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--accent);
+  display: grid; place-items: center; cursor: pointer; box-shadow: var(--shadow);
+  transition: background .15s, border-color .15s;
+}
+.recenter-btn:hover { background: var(--surface-3); border-color: var(--border-strong); }
+
 /* ---------- Satnav: bottom status bar ---------- */
 .nav-status {
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 20;

@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
+import { LocateFixed } from 'lucide-react'
 import type { Place } from '../services/geocode'
 import type { RouteResult } from '../services/route'
 
@@ -59,6 +60,11 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
   const cyclist = useRef<L.Marker | null>(null)
   const animRef = useRef<number | null>(null)
   const navMarker = useRef<L.Marker | null>(null)
+  const followRef = useRef(true)
+  const navigatingRef = useRef(navigating)
+  const [showRecenter, setShowRecenter] = useState(false)
+
+  useEffect(() => { navigatingRef.current = navigating }, [navigating])
 
   // Create the map once.
   useEffect(() => {
@@ -95,6 +101,15 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
         { position: 'topright', collapsed: true },
       )
       .addTo(map)
+
+    // If the rider drags the map away during navigation, stop auto-following
+    // and surface a "recenter" button instead of fighting their pan.
+    map.on('dragstart', () => {
+      if (navigatingRef.current) {
+        followRef.current = false
+        setShowRecenter(true)
+      }
+    })
 
     mapRef.current = map
   }, [])
@@ -214,6 +229,8 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
     if (!navigating || !navPosition) {
       navMarker.current?.remove()
       navMarker.current = null
+      followRef.current = true
+      setShowRecenter(false)
       return
     }
 
@@ -230,12 +247,36 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
       map.setView(ll, 17, { animate: true })
     } else {
       navMarker.current.setLatLng(ll)
-      map.panTo(ll, { animate: true, duration: 0.3 })
+      if (followRef.current) {
+        map.panTo(ll, { animate: true, duration: 0.3 })
+      }
     }
     const arrow = navMarker.current.getElement()?.querySelector<HTMLElement>('.nav-pos-arrow')
     // The lucide "navigation" glyph points north-east by default, so offset by -45deg.
     if (arrow) arrow.style.transform = `rotate(${navPosition.heading - 45}deg)`
   }, [navigating, navPosition])
 
-  return <div ref={elRef} className="map" />
+  function recenter() {
+    const map = mapRef.current
+    if (!map || !navMarker.current) return
+    followRef.current = true
+    setShowRecenter(false)
+    map.panTo(navMarker.current.getLatLng(), { animate: true })
+  }
+
+  return (
+    <>
+      <div ref={elRef} className="map" />
+      {navigating && showRecenter && (
+        <button
+          className="recenter-btn"
+          onClick={recenter}
+          aria-label="Recenter map on my location"
+          title="Recenter"
+        >
+          <LocateFixed size={20} />
+        </button>
+      )}
+    </>
+  )
 }
