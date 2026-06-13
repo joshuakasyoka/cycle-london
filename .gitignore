@@ -12,3 +12,4 @@ dist-ssr
 # Logs
 *.log
 npm-debug.log*
+.vercel
