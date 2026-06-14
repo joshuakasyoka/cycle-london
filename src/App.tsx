@@ -4,8 +4,8 @@ import LocationInput from './components/LocationInput'
 import MapView from './components/MapView'
 import NavOverlay, { type GpsStatus } from './components/NavOverlay'
 import { reverseGeocode, type Place } from './services/geocode'
-import { addHazard, listHazards, removeHazard, type HazardSegment } from './services/hazards'
-import { fetchRoute, type RouteResult } from './services/route'
+import { addHazard, listHazards, removeHazard, voteHazard, type HazardSegment } from './services/hazards'
+import { fetchRoute, snapToRoad, type RouteResult } from './services/route'
 import {
   buildNavRoute,
   formatDistance,
@@ -36,6 +36,8 @@ export default function App() {
   const [hazards, setHazards]         = useState<HazardSegment[]>([])
   const [reporting, setReporting]     = useState(false)
   const [pendingPoints, setPendingPoints] = useState<[number, number][]>([])
+  const [pendingPath, setPendingPath] = useState<[number, number][] | null>(null)
+  const [snapping, setSnapping]       = useState(false)
   const [hazardNote, setHazardNote]   = useState('')
 
   // Navigation state
@@ -304,32 +306,56 @@ export default function App() {
   // ── Hazard reporting ───────────────────────────────────────────────────────
   function startReporting() {
     setReporting(true)
+    setCollapsed(true)
     setPendingPoints([])
+    setPendingPath(null)
     setHazardNote('')
   }
 
   function cancelReporting() {
     setReporting(false)
     setPendingPoints([])
+    setPendingPath(null)
     setHazardNote('')
   }
 
   function handleMapClick(lat: number, lon: number) {
     setPendingPoints((pts) => (pts.length >= 2 ? [[lat, lon]] : [...pts, [lat, lon]]))
+    setPendingPath(null)
   }
+
+  // Once both points are picked, snap the straight line onto the road network.
+  useEffect(() => {
+    if (pendingPoints.length !== 2) return
+    let cancelled = false
+    setSnapping(true)
+    snapToRoad(pendingPoints[0], pendingPoints[1])
+      .then((path) => { if (!cancelled) setPendingPath(path) })
+      .catch(() => { if (!cancelled) setPendingPath(null) })
+      .finally(() => { if (!cancelled) setSnapping(false) })
+    return () => { cancelled = true }
+  }, [pendingPoints])
 
   async function saveHazard() {
     if (pendingPoints.length !== 2) return
-    const segment = await addHazard(pendingPoints, hazardNote)
+    const points = pendingPath && pendingPath.length >= 2 ? pendingPath : pendingPoints
+    const segment = await addHazard(points, hazardNote)
     setHazards((hs) => [...hs, segment])
     setReporting(false)
     setPendingPoints([])
+    setPendingPath(null)
     setHazardNote('')
   }
 
   async function handleRemoveHazard(id: string) {
     await removeHazard(id)
     setHazards((hs) => hs.filter((h) => h.id !== id))
+  }
+
+  async function handleVoteHazard(id: string, vote: 1 | -1) {
+    const updated = await voteHazard(id, vote)
+    if (!updated) return
+    setHazards((hs) => hs.map((h) => (h.id === id ? updated : h)))
   }
 
   return (
@@ -344,8 +370,10 @@ export default function App() {
         hazards={hazards}
         reporting={reporting}
         pendingPoints={pendingPoints}
+        pendingPath={pendingPath}
         onMapClick={handleMapClick}
         onRemoveHazard={handleRemoveHazard}
+        onVoteHazard={handleVoteHazard}
       />
 
       {!navigating && (
@@ -363,9 +391,11 @@ export default function App() {
           <p>
             {pendingPoints.length < 2
               ? `Tap ${2 - pendingPoints.length} more point${pendingPoints.length === 1 ? '' : 's'} on the map to mark the unsafe stretch.`
-              : 'Add a note (optional) and save this report.'}
+              : snapping
+                ? 'Snapping to the road…'
+                : 'Add a note (optional) and save this report.'}
           </p>
-          {pendingPoints.length === 2 && (
+          {pendingPoints.length === 2 && !snapping && (
             <>
               <input
                 className="report-card-input"
@@ -397,7 +427,7 @@ export default function App() {
           onToggleMute={() => setMuted(m => !m)}
           onEnd={endRide}
         />
-      ) : collapsed && route ? (
+      ) : reporting ? null : collapsed && route ? (
         <div className="sheet sheet--route-mini" onClick={() => setCollapsed(false)}>
           <button
             className="sheet-handle"

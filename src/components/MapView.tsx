@@ -22,14 +22,54 @@ interface Props {
   hazards: HazardSegment[]
   reporting: boolean
   pendingPoints: [number, number][]
+  pendingPath: [number, number][] | null
   onMapClick: (lat: number, lon: number) => void
   onRemoveHazard: (id: string) => void
+  onVoteHazard: (id: string, vote: 1 | -1) => void
 }
 
 const LONDON_CENTER: L.LatLngExpression = [51.5074, -0.1278]
 
 const PIN_SVG = (color: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="${color}" stroke="#0a0a0c" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"/><circle cx="12" cy="10" r="3"/></svg>`
+
+function buildHazardPopup(
+  h: HazardSegment,
+  onVoteHazard: (id: string, vote: 1 | -1) => void,
+  onRemoveHazard: (id: string) => void,
+): HTMLElement {
+  const popup = document.createElement('div')
+  popup.className = 'hazard-popup'
+  // Keep clicks inside the popup from bubbling to the map, which would
+  // otherwise close the popup before the vote/remove handlers can run.
+  L.DomEvent.disableClickPropagation(popup)
+  L.DomEvent.on(popup, 'click', L.DomEvent.stopPropagation)
+
+  const note = document.createElement('p')
+  note.textContent = h.note || 'Reported as an unsafe stretch by a rider.'
+
+  const votes = document.createElement('div')
+  votes.className = 'hazard-votes'
+  const up = document.createElement('button')
+  up.className = `hazard-vote hazard-vote--up ${h.myVote === 1 ? 'hazard-vote--active' : ''}`
+  up.textContent = `👍 ${h.upvotes}`
+  up.setAttribute('aria-label', 'Agree this is unsafe')
+  up.onclick = () => onVoteHazard(h.id, 1)
+  const down = document.createElement('button')
+  down.className = `hazard-vote hazard-vote--down ${h.myVote === -1 ? 'hazard-vote--active' : ''}`
+  down.textContent = `👎 ${h.downvotes}`
+  down.setAttribute('aria-label', 'Disagree this is unsafe')
+  down.onclick = () => onVoteHazard(h.id, -1)
+  votes.append(up, down)
+
+  const remove = document.createElement('button')
+  remove.className = 'hazard-remove'
+  remove.textContent = 'Remove report'
+  remove.onclick = () => onRemoveHazard(h.id)
+
+  popup.append(note, votes, remove)
+  return popup
+}
 
 function pinIcon(color: string) {
   return L.divIcon({
@@ -70,8 +110,10 @@ export default function MapView({
   hazards,
   reporting,
   pendingPoints,
+  pendingPath,
   onMapClick,
   onRemoveHazard,
+  onVoteHazard,
 }: Props) {
   const elRef = useRef<HTMLDivElement>(null)
   const rotorRef = useRef<HTMLDivElement>(null)
@@ -88,6 +130,7 @@ export default function MapView({
   const deviceHeadingRef = useRef<number | null>(null)
   const hazardsLayer = useRef<L.LayerGroup | null>(null)
   const pendingLayer = useRef<L.LayerGroup | null>(null)
+  const hazardLinesRef = useRef<Map<string, L.Polyline>>(new Map())
   const [showRecenter, setShowRecenter] = useState(false)
 
   useEffect(() => { navigatingRef.current = navigating }, [navigating])
@@ -347,32 +390,41 @@ export default function MapView({
     applyHeading(deviceHeadingRef.current ?? navPosition.heading)
   }, [navigating, navPosition])
 
-  // Draw rider-reported unsafe stretches as dashed red lines.
+  // Draw rider-reported unsafe stretches as dashed red lines. Existing
+  // polylines/popups are updated in place (rather than cleared and rebuilt)
+  // so an open popup doesn't get dismissed when its vote counts change.
   useEffect(() => {
     const layer = hazardsLayer.current
     if (!layer) return
-    layer.clearLayers()
-    for (const h of hazards) {
-      const line = L.polyline(h.points, {
-        color: '#ef4444',
-        weight: 6,
-        opacity: 0.85,
-        dashArray: '2 10',
-        lineCap: 'round',
-      }).addTo(layer)
+    const existing = hazardLinesRef.current
+    const seen = new Set<string>()
 
-      const popup = document.createElement('div')
-      popup.className = 'hazard-popup'
-      const note = document.createElement('p')
-      note.textContent = h.note || 'Reported as an unsafe stretch by a rider.'
-      const btn = document.createElement('button')
-      btn.className = 'hazard-remove'
-      btn.textContent = 'Remove report'
-      btn.onclick = () => onRemoveHazard(h.id)
-      popup.append(note, btn)
-      line.bindPopup(popup)
+    for (const h of hazards) {
+      seen.add(h.id)
+      const content = buildHazardPopup(h, onVoteHazard, onRemoveHazard)
+      let line = existing.get(h.id)
+      if (line) {
+        line.setPopupContent(content)
+      } else {
+        line = L.polyline(h.points, {
+          color: '#ef4444',
+          weight: 6,
+          opacity: 0.85,
+          dashArray: '2 10',
+          lineCap: 'round',
+        }).addTo(layer)
+        line.bindPopup(content)
+        existing.set(h.id, line)
+      }
     }
-  }, [hazards, onRemoveHazard])
+
+    for (const [id, line] of existing) {
+      if (!seen.has(id)) {
+        line.remove()
+        existing.delete(id)
+      }
+    }
+  }, [hazards, onRemoveHazard, onVoteHazard])
 
   // While reporting, let the rider tap two points on the map to mark a stretch.
   useEffect(() => {
@@ -394,7 +446,8 @@ export default function MapView({
     }
   }, [reporting, onMapClick])
 
-  // Show the points picked so far for the in-progress hazard report.
+  // Show the points picked so far for the in-progress hazard report, and the
+  // road-snapped path once it's been resolved.
   useEffect(() => {
     const layer = pendingLayer.current
     if (!layer) return
@@ -409,9 +462,10 @@ export default function MapView({
       }).addTo(layer)
     }
     if (pendingPoints.length === 2) {
-      L.polyline(pendingPoints, { color: '#ef4444', weight: 5, dashArray: '6 8' }).addTo(layer)
+      const path = pendingPath && pendingPath.length >= 2 ? pendingPath : pendingPoints
+      L.polyline(path, { color: '#ef4444', weight: 5, dashArray: '6 8', lineCap: 'round' }).addTo(layer)
     }
-  }, [pendingPoints])
+  }, [pendingPoints, pendingPath])
 
   function recenter() {
     const map = mapRef.current

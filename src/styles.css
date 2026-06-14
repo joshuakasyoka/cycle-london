@@ -330,6 +330,13 @@ body { background: var(--bg); color: var(--text); overscroll-behavior: none; }
 .report-discard:hover { background: var(--surface-3); }
 
 .hazard-popup p { margin: 0 0 8px; font-size: 13px; color: var(--text); max-width: 200px; }
+.hazard-votes { display: flex; gap: 6px; margin-bottom: 8px; }
+.hazard-vote {
+  border: 1px solid var(--border); border-radius: 999px; padding: 5px 10px; background: var(--surface-2);
+  color: var(--text); font-size: 12px; font-weight: 700; cursor: pointer; transition: background .15s, border-color .15s;
+}
+.hazard-vote:hover { background: var(--surface-3); }
+.hazard-vote--active { border-color: var(--border-strong); background: var(--surface-3); }
 .hazard-popup .hazard-remove {
   border: 0; border-radius: 999px; padding: 6px 12px; background: var(--danger); color: #fff;
   font-size: 12px; font-weight: 700; cursor: pointer;
