@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   ArrowUp,
   ArrowUpRight,
   ArrowUpLeft,
@@ -27,16 +28,17 @@ interface Props {
   muted: boolean
   gpsStatus: GpsStatus
   gpsAccuracy: number | null // metres
+  hazardAhead: boolean
   onToggleMute: () => void
   onEnd: () => void
 }
 
 const GPS_LABELS: Record<GpsStatus, { label: string; color: string }> = {
-  acquiring: { label: 'Acquiring GPS…', color: '#fbbf24' },
-  live:      { label: 'Live GPS',       color: '#5cf27a' },
+  acquiring: { label: 'Acquiring GPS…', color: '#f59e0b' },
+  live:      { label: 'Live GPS',       color: '#16a34a' },
   'off-route': { label: 'Off route',    color: '#f97316' },
-  denied:    { label: 'GPS denied',     color: '#ff6b6b' },
-  sim:       { label: 'Demo ride',      color: '#9a9ca6' },
+  denied:    { label: 'GPS denied',     color: '#ef4444' },
+  sim:       { label: 'Demo ride',      color: '#6b7280' },
 }
 
 const MANEUVER_ICONS: Record<ManeuverType, LucideIcon> = {
@@ -66,6 +68,7 @@ export default function NavOverlay({
   muted,
   gpsStatus,
   gpsAccuracy,
+  hazardAhead,
   onToggleMute,
   onEnd,
 }: Props) {
@@ -88,6 +91,11 @@ export default function NavOverlay({
           {then && !arrived && (
             <span className="nav-then">
               then <span className="nav-then-icon"><ManeuverIcon type={then.type} size={13} /></span> {then.text}
+            </span>
+          )}
+          {hazardAhead && !arrived && (
+            <span className="nav-hazard">
+              <AlertTriangle size={13} /> Riders have reported this stretch as less safe
             </span>
           )}
         </div>

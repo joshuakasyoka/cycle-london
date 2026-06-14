@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowUpDown, Bike, Eye, MapPin, Play } from 'lucide-react'
+import { AlertTriangle, ArrowUpDown, Bike, Eye, MapPin, Play } from 'lucide-react'
 import LocationInput from './components/LocationInput'
 import MapView from './components/MapView'
 import NavOverlay, { type GpsStatus } from './components/NavOverlay'
 import { reverseGeocode, type Place } from './services/geocode'
+import { addHazard, listHazards, removeHazard, type HazardSegment } from './services/hazards'
 import { fetchRoute, type RouteResult } from './services/route'
 import {
   buildNavRoute,
   formatDistance,
+  hazardsAhead,
   positionAt,
   projectOntoRoute,
   upcoming,
@@ -30,6 +32,12 @@ export default function App() {
   const [collapsed, setCollapsed]   = useState(false)
   const [locating, setLocating]     = useState(false)
 
+  // Hazard-reporting state
+  const [hazards, setHazards]         = useState<HazardSegment[]>([])
+  const [reporting, setReporting]     = useState(false)
+  const [pendingPoints, setPendingPoints] = useState<[number, number][]>([])
+  const [hazardNote, setHazardNote]   = useState('')
+
   // Navigation state
   const [navigating, setNavigating] = useState(false)
   const [navDist, setNavDist]       = useState(0)
@@ -47,9 +55,16 @@ export default function App() {
   const mutedRef       = useRef(false)
   const watchIdRef     = useRef<number | null>(null)
   const gpsActiveRef   = useRef(false)  // true once watchPosition fires at least once
+  const hazardsRef         = useRef<HazardSegment[]>([])
+  const announcedHazardsRef = useRef<Set<string>>(new Set())
 
   // Keep mutedRef in sync so speak() doesn't close over stale state
   useEffect(() => { mutedRef.current = muted }, [muted])
+  // Keep hazardsRef in sync so callbacks don't close over stale state
+  useEffect(() => { hazardsRef.current = hazards }, [hazards])
+
+  // Load any hazards reported on this device
+  useEffect(() => { listHazards().then(setHazards) }, [])
 
   // ── Voice ──────────────────────────────────────────────────────────────────
   const speak = useCallback((text: string) => {
@@ -74,6 +89,16 @@ export default function App() {
     ) {
       announcedRef.current.add(next.distanceFromStart)
       speak(`In ${formatDistance(distanceToNext)}, ${next.text}`)
+    }
+  }, [speak])
+
+  // ── Warn about reported hazards ahead ──────────────────────────────────────
+  const maybeAnnounceHazard = useCallback((nav: NavRoute, dist: number) => {
+    for (const h of hazardsAhead(nav, hazardsRef.current, dist)) {
+      if (!announcedHazardsRef.current.has(h.id)) {
+        announcedHazardsRef.current.add(h.id)
+        speak('Riders have reported this stretch as less safe. Take care.')
+      }
     }
   }, [speak])
 
@@ -150,8 +175,9 @@ export default function App() {
       markArrived()
     } else {
       maybeAnnounce(nav, proj.dist)
+      maybeAnnounceHazard(nav, proj.dist)
     }
-  }, [markArrived, maybeAnnounce])
+  }, [markArrived, maybeAnnounce, maybeAnnounceHazard])
 
   const onGpsError = useCallback((err: GeolocationPositionError) => {
     console.warn('GPS error:', err.message)
@@ -179,6 +205,7 @@ export default function App() {
     const nav = buildNavRoute(route.coordinates)
     navRouteRef.current = nav
     announcedRef.current = new Set()
+    announcedHazardsRef.current = new Set()
     distRef.current = 0
     gpsActiveRef.current = false
     setNavDist(0)
@@ -250,6 +277,7 @@ export default function App() {
         return
       }
       maybeAnnounce(nav, nd)
+      maybeAnnounceHazard(nav, nd)
     }
 
     simIntervalRef.current = window.setInterval(tick, TICK_MS)
@@ -257,7 +285,7 @@ export default function App() {
       if (simIntervalRef.current !== null) window.clearInterval(simIntervalRef.current)
       simIntervalRef.current = null
     }
-  }, [navigating, markArrived, maybeAnnounce])
+  }, [navigating, markArrived, maybeAnnounce, maybeAnnounceHazard])
 
   // ── Derived view-model ─────────────────────────────────────────────────────
   const nav = navRouteRef.current
@@ -271,6 +299,38 @@ export default function App() {
   const remaining    = nav ? Math.max(0, nav.total - navDist) : 0
   const remainingMin = nav && route
     ? route.durationMin * (nav.total > 0 ? remaining / nav.total : 0) : 0
+  const hazardAhead  = navigating && nav ? hazardsAhead(nav, hazards, navDist).length > 0 : false
+
+  // ── Hazard reporting ───────────────────────────────────────────────────────
+  function startReporting() {
+    setReporting(true)
+    setPendingPoints([])
+    setHazardNote('')
+  }
+
+  function cancelReporting() {
+    setReporting(false)
+    setPendingPoints([])
+    setHazardNote('')
+  }
+
+  function handleMapClick(lat: number, lon: number) {
+    setPendingPoints((pts) => (pts.length >= 2 ? [[lat, lon]] : [...pts, [lat, lon]]))
+  }
+
+  async function saveHazard() {
+    if (pendingPoints.length !== 2) return
+    const segment = await addHazard(pendingPoints, hazardNote)
+    setHazards((hs) => [...hs, segment])
+    setReporting(false)
+    setPendingPoints([])
+    setHazardNote('')
+  }
+
+  async function handleRemoveHazard(id: string) {
+    await removeHazard(id)
+    setHazards((hs) => hs.filter((h) => h.id !== id))
+  }
 
   return (
     <div className="app">
@@ -281,7 +341,46 @@ export default function App() {
         traceToken={traceToken}
         navigating={navigating}
         navPosition={navPosition}
+        hazards={hazards}
+        reporting={reporting}
+        pendingPoints={pendingPoints}
+        onMapClick={handleMapClick}
+        onRemoveHazard={handleRemoveHazard}
       />
+
+      {!navigating && (
+        <button
+          className={`report-btn ${reporting ? 'report-btn--active' : ''}`}
+          onClick={() => (reporting ? cancelReporting() : startReporting())}
+        >
+          <AlertTriangle size={16} />
+          {reporting ? 'Cancel reporting' : 'Report unsafe road'}
+        </button>
+      )}
+
+      {reporting && (
+        <div className="report-card">
+          <p>
+            {pendingPoints.length < 2
+              ? `Tap ${2 - pendingPoints.length} more point${pendingPoints.length === 1 ? '' : 's'} on the map to mark the unsafe stretch.`
+              : 'Add a note (optional) and save this report.'}
+          </p>
+          {pendingPoints.length === 2 && (
+            <>
+              <input
+                className="report-card-input"
+                placeholder="What makes this stretch unsafe? (optional)"
+                value={hazardNote}
+                onChange={(e) => setHazardNote(e.target.value)}
+              />
+              <div className="report-card-actions">
+                <button className="report-save" onClick={saveHazard}>Save report</button>
+                <button className="report-discard" onClick={cancelReporting}>Discard</button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {navigating && navView ? (
         <NavOverlay
@@ -294,11 +393,30 @@ export default function App() {
           muted={muted}
           gpsStatus={gpsStatus}
           gpsAccuracy={gpsAccuracy}
+          hazardAhead={hazardAhead}
           onToggleMute={() => setMuted(m => !m)}
           onEnd={endRide}
         />
+      ) : collapsed && route ? (
+        <div className="sheet sheet--route-mini" onClick={() => setCollapsed(false)}>
+          <button
+            className="sheet-handle"
+            onClick={(e) => { e.stopPropagation(); setCollapsed(false) }}
+            aria-label="Expand panel"
+          />
+          <div className="mini-route">
+            <div className="mini-route-info">
+              <span>{route.distanceKm.toFixed(1)} km</span>
+              <span className="mini-route-sep">·</span>
+              <span>{Math.round(route.durationMin)} min</span>
+            </div>
+            <button className="start-ride" onClick={(e) => { e.stopPropagation(); startRide() }}>
+              <Play size={20} fill="currentColor" /> Start ride
+            </button>
+          </div>
+        </div>
       ) : (
-        <div className={`sheet ${collapsed ? 'sheet--mini' : ''}`}>
+        <div className="sheet">
           <button
             className="sheet-handle"
             onClick={() => setCollapsed(c => !c)}
@@ -315,7 +433,7 @@ export default function App() {
 
           <div className="inputs">
             <LocationInput
-              icon={<MapPin size={15} color="#5cf27a" />}
+              icon={<MapPin size={15} color="#16a34a" />}
               placeholder="Start — e.g. King's Cross"
               value={start}
               onChange={setStart}
@@ -326,7 +444,7 @@ export default function App() {
               <ArrowUpDown size={16} />
             </button>
             <LocationInput
-              icon={<MapPin size={15} color="#ff6b6b" />}
+              icon={<MapPin size={15} color="#ef4444" />}
               placeholder="Destination — e.g. London Bridge"
               value={end}
               onChange={setEnd}

@@ -2,6 +2,7 @@
 // Maneuvers are derived from the route geometry itself (bearing change at each
 // vertex), so they work for any BRouter route without extra API calls.
 import L from 'leaflet'
+import type { HazardSegment } from './hazards'
 
 export type ManeuverType =
   | 'depart'
@@ -154,6 +155,23 @@ export function upcoming(nav: NavRoute, dist: number) {
   const next = idx === -1 ? nav.maneuvers[nav.maneuvers.length - 1] : nav.maneuvers[idx]
   const then = idx === -1 || idx + 1 >= nav.maneuvers.length ? null : nav.maneuvers[idx + 1]
   return { next, then, distanceToNext: Math.max(0, next.distanceFromStart - dist) }
+}
+
+// Rider-reported hazards whose endpoints fall on (or near) the upcoming
+// stretch of the route — used to warn riders during navigation.
+export function hazardsAhead(
+  nav: NavRoute,
+  hazards: HazardSegment[],
+  dist: number,
+  lookaheadM = 150,
+  maxOffsetM = 30,
+): HazardSegment[] {
+  return hazards.filter((h) =>
+    h.points.some(([lat, lon]) => {
+      const proj = projectOntoRoute(nav, lat, lon)
+      return proj.offRouteMeters <= maxOffsetM && proj.dist >= dist && proj.dist <= dist + lookaheadM
+    }),
+  )
 }
 
 export function formatDistance(m: number): string {

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
 import { LocateFixed } from 'lucide-react'
+import { DANGER_ZONES } from '../data/dangerZones'
 import type { Place } from '../services/geocode'
 import type { RouteResult } from '../services/route'
+import type { HazardSegment } from '../services/hazards'
 
 export interface NavPosition {
   lat: number
@@ -17,6 +19,11 @@ interface Props {
   traceToken: number // bump to (re)start the tracing animation
   navigating: boolean
   navPosition: NavPosition | null
+  hazards: HazardSegment[]
+  reporting: boolean
+  pendingPoints: [number, number][]
+  onMapClick: (lat: number, lon: number) => void
+  onRemoveHazard: (id: string) => void
 }
 
 const LONDON_CENTER: L.LatLngExpression = [51.5074, -0.1278]
@@ -53,7 +60,19 @@ const navArrowIcon = L.divIcon({
   iconAnchor: [19, 19],
 })
 
-export default function MapView({ start, end, route, traceToken, navigating, navPosition }: Props) {
+export default function MapView({
+  start,
+  end,
+  route,
+  traceToken,
+  navigating,
+  navPosition,
+  hazards,
+  reporting,
+  pendingPoints,
+  onMapClick,
+  onRemoveHazard,
+}: Props) {
   const elRef = useRef<HTMLDivElement>(null)
   const rotorRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
@@ -67,6 +86,8 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
   const followRef = useRef(true)
   const navigatingRef = useRef(navigating)
   const deviceHeadingRef = useRef<number | null>(null)
+  const hazardsLayer = useRef<L.LayerGroup | null>(null)
+  const pendingLayer = useRef<L.LayerGroup | null>(null)
   const [showRecenter, setShowRecenter] = useState(false)
 
   useEffect(() => { navigatingRef.current = navigating }, [navigating])
@@ -113,9 +134,9 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
     )
     L.control.zoom({ position: 'bottomright' }).addTo(map)
 
-    // Dark, modern basemap (CARTO Dark Matter) — keyless and open, matches the app UI.
-    const dark = L.tileLayer(
-      'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    // Clean, light basemap (CARTO Positron) — keyless, open, and easy to read at a glance.
+    const light = L.tileLayer(
+      'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
       {
         subdomains: 'abcd',
         maxZoom: 20,
@@ -132,10 +153,27 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
         '&copy; <a href="https://www.cyclosm.org">CyclOSM</a> | &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors | routing &copy; <a href="https://brouter.de">BRouter</a>',
     })
 
+    // Known collision hotspots for cyclists, shown as red zones.
+    const dangerZones = L.layerGroup(
+      DANGER_ZONES.map((z) =>
+        L.circle([z.lat, z.lon], {
+          radius: z.radiusM,
+          color: '#ef4444',
+          weight: 1.5,
+          fillColor: '#ef4444',
+          fillOpacity: 0.22,
+        }).bindTooltip(`${z.name} — ${z.note}`, { sticky: true }),
+      ),
+    ).addTo(map)
+
+    // Rider-reported unsafe stretches, and the in-progress pending report.
+    hazardsLayer.current = L.layerGroup().addTo(map)
+    pendingLayer.current = L.layerGroup().addTo(map)
+
     L.control
       .layers(
-        { Dark: dark, 'Cycle network': cycle },
-        undefined,
+        { Light: light, 'Cycle network': cycle },
+        { 'Danger zones': dangerZones, 'Unsafe roads (reported)': hazardsLayer.current },
         { position: 'topright', collapsed: true },
       )
       .addTo(map)
@@ -160,7 +198,7 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
     startMarker.current?.remove()
     startMarker.current = null
     if (start) {
-      startMarker.current = L.marker([start.lat, start.lon], { icon: pinIcon('#5cf27a') })
+      startMarker.current = L.marker([start.lat, start.lon], { icon: pinIcon('#16a34a') })
         .addTo(map)
         .bindTooltip(start.short, { direction: 'top', offset: [0, -28] })
     }
@@ -168,7 +206,7 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
     endMarker.current?.remove()
     endMarker.current = null
     if (end) {
-      endMarker.current = L.marker([end.lat, end.lon], { icon: pinIcon('#ff6b6b') })
+      endMarker.current = L.marker([end.lat, end.lon], { icon: pinIcon('#ef4444') })
         .addTo(map)
         .bindTooltip(end.short, { direction: 'top', offset: [0, -28] })
     }
@@ -198,7 +236,7 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
 
     if (!route) return
     routeLine.current = L.polyline(route.coordinates, {
-      color: '#5cf27a',
+      color: '#16a34a',
       weight: 5,
       opacity: 0.9,
       lineJoin: 'round',
@@ -223,7 +261,7 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
     const total = cum[cum.length - 1]
 
     progressLine.current = L.polyline([pts[0]], {
-      color: '#fbbf24',
+      color: '#f59e0b',
       weight: 6,
       opacity: 0.95,
     }).addTo(map)
@@ -308,6 +346,72 @@ export default function MapView({ start, end, route, traceToken, navigating, nav
     // direction when orientation data isn't available (e.g. desktop browsers).
     applyHeading(deviceHeadingRef.current ?? navPosition.heading)
   }, [navigating, navPosition])
+
+  // Draw rider-reported unsafe stretches as dashed red lines.
+  useEffect(() => {
+    const layer = hazardsLayer.current
+    if (!layer) return
+    layer.clearLayers()
+    for (const h of hazards) {
+      const line = L.polyline(h.points, {
+        color: '#ef4444',
+        weight: 6,
+        opacity: 0.85,
+        dashArray: '2 10',
+        lineCap: 'round',
+      }).addTo(layer)
+
+      const popup = document.createElement('div')
+      popup.className = 'hazard-popup'
+      const note = document.createElement('p')
+      note.textContent = h.note || 'Reported as an unsafe stretch by a rider.'
+      const btn = document.createElement('button')
+      btn.className = 'hazard-remove'
+      btn.textContent = 'Remove report'
+      btn.onclick = () => onRemoveHazard(h.id)
+      popup.append(note, btn)
+      line.bindPopup(popup)
+    }
+  }, [hazards, onRemoveHazard])
+
+  // While reporting, let the rider tap two points on the map to mark a stretch.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    const container = map.getContainer()
+    if (!reporting) {
+      container.style.cursor = ''
+      return
+    }
+    container.style.cursor = 'crosshair'
+    function onClick(e: L.LeafletMouseEvent) {
+      onMapClick(e.latlng.lat, e.latlng.lng)
+    }
+    map.on('click', onClick)
+    return () => {
+      map.off('click', onClick)
+      container.style.cursor = ''
+    }
+  }, [reporting, onMapClick])
+
+  // Show the points picked so far for the in-progress hazard report.
+  useEffect(() => {
+    const layer = pendingLayer.current
+    if (!layer) return
+    layer.clearLayers()
+    for (const [lat, lon] of pendingPoints) {
+      L.circleMarker([lat, lon], {
+        radius: 7,
+        color: '#ef4444',
+        weight: 2,
+        fillColor: '#ef4444',
+        fillOpacity: 0.9,
+      }).addTo(layer)
+    }
+    if (pendingPoints.length === 2) {
+      L.polyline(pendingPoints, { color: '#ef4444', weight: 5, dashArray: '6 8' }).addTo(layer)
+    }
+  }, [pendingPoints])
 
   function recenter() {
     const map = mapRef.current
