@@ -20,6 +20,8 @@ interface Props {
   navigating: boolean
   navPosition: NavPosition | null
   hazards: HazardSegment[]
+  routeHazards: HazardSegment[] // hazards overlapping the planned route, in order
+  preview: { id: string; token: number } | null // pan/zoom to this hazard
   reporting: boolean
   pendingPoints: [number, number][]
   pendingPath: [number, number][] | null
@@ -32,6 +34,15 @@ const LONDON_CENTER: L.LatLngExpression = [51.5074, -0.1278]
 
 const PIN_SVG = (color: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="${color}" stroke="#0a0a0c" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"/><circle cx="12" cy="10" r="3"/></svg>`
+
+const THUMBS_UP_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/><path d="M7 10v12"/></svg>'
+
+const THUMBS_DOWN_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/><path d="M17 14V2"/></svg>'
+
+const LAYERS_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></svg>'
 
 function buildHazardPopup(
   h: HazardSegment,
@@ -52,12 +63,12 @@ function buildHazardPopup(
   votes.className = 'hazard-votes'
   const up = document.createElement('button')
   up.className = `hazard-vote hazard-vote--up ${h.myVote === 1 ? 'hazard-vote--active' : ''}`
-  up.textContent = `👍 ${h.upvotes}`
+  up.innerHTML = `${THUMBS_UP_SVG}<span>${h.upvotes}</span>`
   up.setAttribute('aria-label', 'Agree this is unsafe')
   up.onclick = () => onVoteHazard(h.id, 1)
   const down = document.createElement('button')
   down.className = `hazard-vote hazard-vote--down ${h.myVote === -1 ? 'hazard-vote--active' : ''}`
-  down.textContent = `👎 ${h.downvotes}`
+  down.innerHTML = `${THUMBS_DOWN_SVG}<span>${h.downvotes}</span>`
   down.setAttribute('aria-label', 'Disagree this is unsafe')
   down.onclick = () => onVoteHazard(h.id, -1)
   votes.append(up, down)
@@ -77,6 +88,15 @@ function pinIcon(color: string) {
     html: `<div class="pin-lucide">${PIN_SVG(color)}</div>`,
     iconSize: [30, 30],
     iconAnchor: [15, 28],
+  })
+}
+
+function hazardNumberIcon(n: number) {
+  return L.divIcon({
+    className: 'hazard-number-wrap',
+    html: `<div class="hazard-number">${n}</div>`,
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
   })
 }
 
@@ -108,6 +128,8 @@ export default function MapView({
   navigating,
   navPosition,
   hazards,
+  routeHazards,
+  preview,
   reporting,
   pendingPoints,
   pendingPath,
@@ -128,9 +150,17 @@ export default function MapView({
   const followRef = useRef(true)
   const navigatingRef = useRef(navigating)
   const deviceHeadingRef = useRef<number | null>(null)
+  const currentHeadingRef = useRef(0)
   const hazardsLayer = useRef<L.LayerGroup | null>(null)
   const pendingLayer = useRef<L.LayerGroup | null>(null)
+  const routeHazardLayer = useRef<L.LayerGroup | null>(null)
   const hazardLinesRef = useRef<Map<string, L.Polyline>>(new Map())
+  const dragStateRef = useRef<{ active: boolean; lastX: number; lastY: number; pointerId: number | null }>({
+    active: false,
+    lastX: 0,
+    lastY: 0,
+    pointerId: null,
+  })
   const [showRecenter, setShowRecenter] = useState(false)
 
   useEffect(() => { navigatingRef.current = navigating }, [navigating])
@@ -138,6 +168,7 @@ export default function MapView({
   // Point the position arrow in the given compass direction, and rotate the
   // whole map so that direction faces "up" the screen — a track-up satnav view.
   function applyHeading(heading: number) {
+    currentHeadingRef.current = heading
     const arrow = navMarker.current?.getElement()?.querySelector<HTMLElement>('.nav-pos-arrow')
     // The lucide "navigation" glyph points north-east by default, so offset by -45deg.
     if (arrow) arrow.style.transform = `rotate(${heading - 45}deg)`
@@ -212,14 +243,22 @@ export default function MapView({
     // Rider-reported unsafe stretches, and the in-progress pending report.
     hazardsLayer.current = L.layerGroup().addTo(map)
     pendingLayer.current = L.layerGroup().addTo(map)
+    routeHazardLayer.current = L.layerGroup().addTo(map)
 
-    L.control
+    const layersControl = L.control
       .layers(
         { Light: light, 'Cycle network': cycle },
         { 'Danger zones': dangerZones, 'Unsafe roads (reported)': hazardsLayer.current },
         { position: 'topright', collapsed: true },
       )
       .addTo(map)
+
+    // Swap Leaflet's default stacked-layers image for a lucide icon.
+    const layersToggle = layersControl.getContainer()?.querySelector<HTMLElement>('.leaflet-control-layers-toggle')
+    if (layersToggle) {
+      layersToggle.innerHTML = LAYERS_SVG
+      layersToggle.classList.add('leaflet-control-layers-toggle--lucide')
+    }
 
     // If the rider drags the map away during navigation, stop auto-following
     // and surface a "recenter" button instead of fighting their pan.
@@ -466,6 +505,87 @@ export default function MapView({
       L.polyline(path, { color: '#ef4444', weight: 5, dashArray: '6 8', lineCap: 'round' }).addTo(layer)
     }
   }, [pendingPoints, pendingPath])
+
+  // Numbered markers for hazards that overlap the planned route, shown before
+  // the ride starts so the rider can preview each unsafe stretch.
+  useEffect(() => {
+    const layer = routeHazardLayer.current
+    if (!layer) return
+    layer.clearLayers()
+    routeHazards.forEach((h, i) => {
+      const mid = h.points[Math.floor(h.points.length / 2)]
+      L.marker(mid, { icon: hazardNumberIcon(i + 1), zIndexOffset: 900 }).addTo(layer)
+    })
+  }, [routeHazards])
+
+  // Pan/zoom to a hazard and open its popup when the rider taps it in the
+  // overlap list.
+  useEffect(() => {
+    if (!preview) return
+    const map = mapRef.current
+    const line = hazardLinesRef.current.get(preview.id)
+    if (!map || !line) return
+    const bounds = line.getBounds()
+    map.fitBounds(bounds, { padding: [80, 80], maxZoom: 17 })
+    line.openPopup(bounds.getCenter())
+  }, [preview])
+
+  // Leaflet's drag handling computes pointer deltas in unrotated screen space,
+  // which fights the CSS-rotated track-up container during navigation. Disable
+  // Leaflet's own dragging while navigating and pan manually instead, rotating
+  // the screen-space delta back into the map's (rotated) pixel space first so
+  // the content tracks the finger correctly.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    if (navigating) map.dragging.disable()
+    else map.dragging.enable()
+  }, [navigating])
+
+  useEffect(() => {
+    const map = mapRef.current
+    const el = elRef.current
+    if (!map || !el) return
+
+    function onPointerDown(e: PointerEvent) {
+      if (!navigatingRef.current) return
+      dragStateRef.current = { active: true, lastX: e.clientX, lastY: e.clientY, pointerId: e.pointerId }
+      el!.setPointerCapture(e.pointerId)
+      followRef.current = false
+      setShowRecenter(true)
+    }
+    function onPointerMove(e: PointerEvent) {
+      const s = dragStateRef.current
+      if (!s.active || s.pointerId !== e.pointerId) return
+      const dx = e.clientX - s.lastX
+      const dy = e.clientY - s.lastY
+      s.lastX = e.clientX
+      s.lastY = e.clientY
+      const rad = (currentHeadingRef.current * Math.PI) / 180
+      const contentDx = dx * Math.cos(rad) - dy * Math.sin(rad)
+      const contentDy = dx * Math.sin(rad) + dy * Math.cos(rad)
+      map!.panBy([-contentDx, -contentDy], { animate: false })
+    }
+    function onPointerUp(e: PointerEvent) {
+      const s = dragStateRef.current
+      if (s.pointerId === e.pointerId) {
+        s.active = false
+        s.pointerId = null
+        try { el!.releasePointerCapture(e.pointerId) } catch { /* already released */ }
+      }
+    }
+
+    el.addEventListener('pointerdown', onPointerDown)
+    el.addEventListener('pointermove', onPointerMove)
+    el.addEventListener('pointerup', onPointerUp)
+    el.addEventListener('pointercancel', onPointerUp)
+    return () => {
+      el.removeEventListener('pointerdown', onPointerDown)
+      el.removeEventListener('pointermove', onPointerMove)
+      el.removeEventListener('pointerup', onPointerUp)
+      el.removeEventListener('pointercancel', onPointerUp)
+    }
+  }, [])
 
   function recenter() {
     const map = mapRef.current

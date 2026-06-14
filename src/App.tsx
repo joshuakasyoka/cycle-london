@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, ArrowUpDown, Bike, Eye, MapPin, Play } from 'lucide-react'
 import LocationInput from './components/LocationInput'
 import MapView from './components/MapView'
@@ -10,6 +10,7 @@ import {
   buildNavRoute,
   formatDistance,
   hazardsAhead,
+  hazardsOnRoute,
   positionAt,
   projectOntoRoute,
   upcoming,
@@ -39,6 +40,8 @@ export default function App() {
   const [pendingPath, setPendingPath] = useState<[number, number][] | null>(null)
   const [snapping, setSnapping]       = useState(false)
   const [hazardNote, setHazardNote]   = useState('')
+  const [showHazardList, setShowHazardList] = useState(false)
+  const [preview, setPreview]         = useState<{ id: string; token: number } | null>(null)
 
   // Navigation state
   const [navigating, setNavigating] = useState(false)
@@ -303,6 +306,23 @@ export default function App() {
     ? route.durationMin * (nav.total > 0 ? remaining / nav.total : 0) : 0
   const hazardAhead  = navigating && nav ? hazardsAhead(nav, hazards, navDist).length > 0 : false
 
+  // Hazards that overlap the planned route — shown as a flag before the ride starts.
+  const routeNav = useMemo(() => (route ? buildNavRoute(route.coordinates) : null), [route])
+  const routeHazards = useMemo(
+    () => (!navigating && routeNav ? hazardsOnRoute(routeNav, hazards) : []),
+    [navigating, routeNav, hazards],
+  )
+
+  // Reset the overlap list/preview whenever a new route is planned.
+  useEffect(() => {
+    setShowHazardList(false)
+    setPreview(null)
+  }, [route])
+
+  function previewHazard(h: HazardSegment) {
+    setPreview({ id: h.id, token: Date.now() })
+  }
+
   // ── Hazard reporting ───────────────────────────────────────────────────────
   function startReporting() {
     setReporting(true)
@@ -368,6 +388,8 @@ export default function App() {
         navigating={navigating}
         navPosition={navPosition}
         hazards={hazards}
+        routeHazards={routeHazards}
+        preview={preview}
         reporting={reporting}
         pendingPoints={pendingPoints}
         pendingPath={pendingPath}
@@ -412,6 +434,18 @@ export default function App() {
         </div>
       )}
 
+      {!navigating && !reporting && showHazardList && routeHazards.length > 0 && (
+        <div className="hazard-list">
+          <p>{routeHazards.length} unsafe stretch{routeHazards.length === 1 ? '' : 'es'} on this route</p>
+          {routeHazards.map((h, i) => (
+            <button key={h.id} className="hazard-list-item" onClick={() => previewHazard(h)}>
+              <span className="hazard-list-num">{i + 1}</span>
+              <span className="hazard-list-note">{h.note || 'Reported as unsafe by a rider'}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {navigating && navView ? (
         <NavOverlay
           next={arrived ? nav!.maneuvers[nav!.maneuvers.length - 1] : navView.next}
@@ -439,6 +473,14 @@ export default function App() {
               <span>{route.distanceKm.toFixed(1)} km</span>
               <span className="mini-route-sep">·</span>
               <span>{Math.round(route.durationMin)} min</span>
+              {routeHazards.length > 0 && (
+                <button
+                  className="hazard-flag"
+                  onClick={(e) => { e.stopPropagation(); setShowHazardList((s) => !s) }}
+                >
+                  <AlertTriangle size={13} /> {routeHazards.length}
+                </button>
+              )}
             </div>
             <button className="start-ride" onClick={(e) => { e.stopPropagation(); startRide() }}>
               <Play size={20} fill="currentColor" /> Start ride
@@ -495,9 +537,16 @@ export default function App() {
                 <Stat value={`${Math.round(route.ascentM)} m`} label="Climb" />
               </div>
               <div className="result-actions">
-                <button className="start-ride" onClick={startRide}>
-                  <Play size={20} fill="currentColor" /> Start ride
-                </button>
+                <div className="start-ride-row">
+                  <button className="start-ride" onClick={startRide}>
+                    <Play size={20} fill="currentColor" /> Start ride
+                  </button>
+                  {routeHazards.length > 0 && (
+                    <button className="hazard-flag" onClick={() => setShowHazardList((s) => !s)}>
+                      <AlertTriangle size={14} /> {routeHazards.length}
+                    </button>
+                  )}
+                </div>
                 <button className="trace" onClick={() => setTraceToken(t => t + 1)}>
                   <Eye size={14} /> Preview route
                 </button>

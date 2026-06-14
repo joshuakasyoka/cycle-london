@@ -332,6 +332,7 @@ body { background: var(--bg); color: var(--text); overscroll-behavior: none; }
 .hazard-popup p { margin: 0 0 8px; font-size: 13px; color: var(--text); max-width: 200px; }
 .hazard-votes { display: flex; gap: 6px; margin-bottom: 8px; }
 .hazard-vote {
+  display: inline-flex; align-items: center; gap: 5px;
   border: 1px solid var(--border); border-radius: 999px; padding: 5px 10px; background: var(--surface-2);
   color: var(--text); font-size: 12px; font-weight: 700; cursor: pointer; transition: background .15s, border-color .15s;
 }
@@ -341,3 +342,52 @@ body { background: var(--bg); color: var(--text); overscroll-behavior: none; }
   border: 0; border-radius: 999px; padding: 6px 12px; background: var(--danger); color: #fff;
   font-size: 12px; font-weight: 700; cursor: pointer;
 }
+
+/* ---------- Layers control: lucide icon ---------- */
+.leaflet-control-layers-toggle--lucide {
+  background-image: none !important;
+  width: 36px !important; height: 36px !important;
+  display: grid !important; place-items: center; color: var(--text);
+}
+
+/* ---------- Numbered hazard markers (route overlap preview) ---------- */
+.hazard-number {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--danger); color: #fff; border: 2px solid #fff;
+  display: grid; place-items: center;
+  font-size: 12px; font-weight: 800;
+  box-shadow: 0 2px 6px rgba(0,0,0,.35);
+}
+
+/* ---------- Route/hazard overlap flag + list ---------- */
+.hazard-flag {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid transparent; border-radius: 999px; padding: 5px 10px;
+  background: var(--danger); color: #fff; font-size: 12.5px; font-weight: 800; cursor: pointer;
+  transition: filter .15s;
+}
+.hazard-flag:hover { filter: brightness(1.08); }
+
+.start-ride-row { display: flex; align-items: center; gap: 10px; }
+.start-ride-row .start-ride { flex: 1; }
+
+.hazard-list {
+  position: absolute; left: 16px; right: 16px; top: calc(70px + env(safe-area-inset-top)); z-index: 21;
+  max-width: 480px; margin: 0 auto;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+  box-shadow: var(--shadow); padding: 14px 16px; max-height: 50vh; overflow: auto;
+}
+.hazard-list p { margin: 0 0 10px; font-size: 14px; font-weight: 700; }
+.hazard-list-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2);
+  padding: 10px 12px; margin-bottom: 8px; cursor: pointer; transition: background .15s;
+}
+.hazard-list-item:last-child { margin-bottom: 0; }
+.hazard-list-item:hover { background: var(--surface-3); }
+.hazard-list-num {
+  flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--danger); color: #fff; display: grid; place-items: center;
+  font-size: 12px; font-weight: 800;
+}
+.hazard-list-note { font-size: 13.5px; color: var(--text); }

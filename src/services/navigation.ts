@@ -174,6 +174,25 @@ export function hazardsAhead(
   )
 }
 
+// Rider-reported hazards that fall on (or near) the route at all, ordered by
+// distance along the route — used to preview unsafe stretches before a ride.
+export function hazardsOnRoute(
+  nav: NavRoute,
+  hazards: HazardSegment[],
+  maxOffsetM = 30,
+): HazardSegment[] {
+  const withDist: { hazard: HazardSegment; dist: number }[] = []
+  for (const h of hazards) {
+    let best = Infinity
+    for (const [lat, lon] of h.points) {
+      const proj = projectOntoRoute(nav, lat, lon)
+      if (proj.offRouteMeters <= maxOffsetM && proj.dist < best) best = proj.dist
+    }
+    if (best !== Infinity) withDist.push({ hazard: h, dist: best })
+  }
+  return withDist.sort((a, b) => a.dist - b.dist).map((x) => x.hazard)
+}
+
 export function formatDistance(m: number): string {
   if (m >= 1000) return `${(m / 1000).toFixed(m < 10000 ? 1 : 0)} km`
   if (m >= 100) return `${Math.round(m / 10) * 10} m`
