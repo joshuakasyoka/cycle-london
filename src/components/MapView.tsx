@@ -173,6 +173,12 @@ export default function MapView({
     // The lucide "navigation" glyph points north-east by default, so offset by -45deg.
     if (arrow) arrow.style.transform = `rotate(${heading - 45}deg)`
     if (rotorRef.current) rotorRef.current.style.transform = `rotate(${-heading}deg)`
+
+    // Counter-rotate any open tooltip labels so their text stays upright
+    // inside the rotated track-up container.
+    mapRef.current?.getContainer()
+      .querySelectorAll<HTMLElement>('.leaflet-tooltip .tt-label')
+      .forEach((el) => { el.style.transform = `rotate(${heading}deg)` })
   }
 
   // While navigating, point the position arrow — and the map itself — at the
@@ -236,7 +242,7 @@ export default function MapView({
           weight: 1.5,
           fillColor: '#ef4444',
           fillOpacity: 0.22,
-        }).bindTooltip(`${z.name} — ${z.note}`, { sticky: true }),
+        }).bindTooltip(`<span class="tt-label">${z.name} — ${z.note}</span>`, { sticky: true }),
       ),
     ).addTo(map)
 
@@ -269,6 +275,15 @@ export default function MapView({
       }
     })
 
+    // Tooltips live inside the rotated track-up container, so newly opened
+    // ones need their label counter-rotated to stay upright immediately.
+    map.on('tooltipopen', (e) => {
+      e.tooltip
+        .getElement()
+        ?.querySelectorAll<HTMLElement>('.tt-label')
+        .forEach((el) => { el.style.transform = `rotate(${currentHeadingRef.current}deg)` })
+    })
+
     mapRef.current = map
   }, [])
 
@@ -282,7 +297,7 @@ export default function MapView({
     if (start) {
       startMarker.current = L.marker([start.lat, start.lon], { icon: pinIcon('#16a34a') })
         .addTo(map)
-        .bindTooltip(start.short, { direction: 'top', offset: [0, -28] })
+        .bindTooltip(`<span class="tt-label">${start.short}</span>`, { direction: 'top', offset: [0, -28] })
     }
 
     endMarker.current?.remove()
@@ -290,7 +305,7 @@ export default function MapView({
     if (end) {
       endMarker.current = L.marker([end.lat, end.lon], { icon: pinIcon('#ef4444') })
         .addTo(map)
-        .bindTooltip(end.short, { direction: 'top', offset: [0, -28] })
+        .bindTooltip(`<span class="tt-label">${end.short}</span>`, { direction: 'top', offset: [0, -28] })
     }
 
     if (start && end && !route) {

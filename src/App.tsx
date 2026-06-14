@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, ArrowUpDown, Bike, Eye, MapPin, Play } from 'lucide-react'
+import { AlertTriangle, ArrowUpDown, Bike, Eye, MapPin, Play, X } from 'lucide-react'
 import LocationInput from './components/LocationInput'
 import MapView from './components/MapView'
 import NavOverlay, { type GpsStatus } from './components/NavOverlay'
@@ -436,6 +436,9 @@ export default function App() {
 
       {!navigating && !reporting && showHazardList && routeHazards.length > 0 && (
         <div className="hazard-list">
+          <button className="hazard-list-close" onClick={() => setShowHazardList(false)} aria-label="Close">
+            <X size={16} />
+          </button>
           <p>{routeHazards.length} unsafe stretch{routeHazards.length === 1 ? '' : 'es'} on this route</p>
           {routeHazards.map((h, i) => (
             <button key={h.id} className="hazard-list-item" onClick={() => previewHazard(h)}>

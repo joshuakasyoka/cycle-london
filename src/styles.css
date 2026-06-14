@@ -343,6 +343,11 @@ body { background: var(--bg); color: var(--text); overscroll-behavior: none; }
   font-size: 12px; font-weight: 700; cursor: pointer;
 }
 
+/* ---------- Tooltip labels: stay upright in track-up mode ---------- */
+.tt-label {
+  display: inline-block;
+}
+
 /* ---------- Layers control: lucide icon ---------- */
 .leaflet-control-layers-toggle--lucide {
   background-image: none !important;
@@ -377,7 +382,14 @@ body { background: var(--bg); color: var(--text); overscroll-behavior: none; }
   background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
   box-shadow: var(--shadow); padding: 14px 16px; max-height: 50vh; overflow: auto;
 }
-.hazard-list p { margin: 0 0 10px; font-size: 14px; font-weight: 700; }
+.hazard-list p { margin: 0 0 10px; padding-right: 28px; font-size: 14px; font-weight: 700; }
+.hazard-list-close {
+  position: absolute; top: 10px; right: 10px;
+  display: grid; place-items: center; width: 26px; height: 26px;
+  border: none; border-radius: 50%; background: var(--surface-2); color: var(--text);
+  cursor: pointer; transition: background .15s;
+}
+.hazard-list-close:hover { background: var(--surface-3); }
 .hazard-list-item {
   display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
   border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2);
