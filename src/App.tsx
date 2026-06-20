@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Eye, MapPin, Play, X } from 'lucide-react'
 import LocationInput from './components/LocationInput'
 import MapView from './components/MapView'
@@ -11,6 +11,7 @@ import { fetchRouteAmenities, type Amenity, type RouteAmenities } from './servic
 import { quietRouteShare, setQuietStreetLines } from './services/lowTrafficRoutes'
 import { fetchRouteContext } from './services/mapFeatures'
 import { bindFemaleVoice, pickFemaleVoice } from './services/voice'
+import { useSheetDrag } from './hooks/useSheetDrag'
 import {
   buildNavRoute,
   formatDistance,
@@ -78,6 +79,7 @@ export default function App() {
   const lastRerouteAtRef = useRef(0)
   const offRouteSinceRef = useRef<number | null>(null)
   const voiceRef = useRef<SpeechSynthesisVoice | null>(null)
+  const sheetScrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => { endRef.current = end }, [end])
 
@@ -95,11 +97,25 @@ export default function App() {
     setShowHazardList(false)
   }
 
+  useLayoutEffect(() => {
+    if (!collapsed && route && sheetScrollRef.current) {
+      sheetScrollRef.current.scrollTop = 0
+    }
+  }, [collapsed, route])
+
   function toggleSheet() {
     if (!route) return
     if (collapsed) expandSheet()
     else collapseSheet()
   }
+
+  const sheetDrag = useSheetDrag({
+    enabled: !!route,
+    expanded: !collapsed,
+    onExpand: expandSheet,
+    onCollapse: collapseSheet,
+    scrollRef: sheetScrollRef,
+  })
 
   function toggleHazardList() {
     setShowHazardList((open) => {
@@ -448,6 +464,7 @@ export default function App() {
   }, [route, end])
 
   function previewHazard(h: HazardSegment) {
+    collapseSheet()
     setPreview({ id: h.id, token: Date.now() })
   }
 
@@ -584,12 +601,18 @@ export default function App() {
           onFocusAmenity={setFocusedAmenity}
         />
       ) : reporting ? null : (
-        <div className={`sheet ${collapsed && route ? 'sheet--peek' : ''}`}>
-          <button
-            className="sheet-handle"
-            onClick={toggleSheet}
-            aria-label={collapsed && route ? 'Expand panel' : route ? 'Collapse panel' : 'Panel handle'}
-          />
+        <div
+          className={`sheet ${collapsed && route ? 'sheet--peek' : ''}`}
+          onTouchStart={sheetDrag.onTouchStart}
+          onTouchEnd={sheetDrag.onTouchEnd}
+        >
+          <div className="sheet-drag">
+            <button
+              className="sheet-handle"
+              onClick={toggleSheet}
+              aria-label={collapsed && route ? 'Expand panel' : route ? 'Collapse panel' : 'Panel handle'}
+            />
+          </div>
           {collapsed && route ? (
             <div className="sheet-peek">
               <RoutePeekBar
@@ -600,7 +623,7 @@ export default function App() {
               />
             </div>
           ) : (
-            <div className="sheet-scroll">
+            <div className="sheet-scroll" ref={sheetScrollRef}>
             <div className="sheet-body">
               <header className="brand">
                 <h1>Safe Cycles</h1>

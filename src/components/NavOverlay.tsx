@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from 'react'
 import {
   AlertTriangle,
   ArrowUp,
@@ -16,6 +17,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import AmenitiesPanel from './AmenitiesPanel'
+import { useSheetDrag } from '../hooks/useSheetDrag'
 import type { RouteAmenities, Amenity } from '../services/amenities'
 import type { Maneuver, ManeuverType } from '../services/navigation'
 import { formatDistance } from '../services/navigation'
@@ -85,10 +87,65 @@ export default function NavOverlay({
   onToggleAmenities,
   onFocusAmenity,
 }: Props) {
+  const amenitiesScrollRef = useRef<HTMLDivElement>(null)
   const arrival = new Date(Date.now() + remainingMin * 60000)
   const arrivalText = arrival.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   const gps = GPS_LABELS[gpsStatus]
   const amenityCount = amenities.parking.length + amenities.alongRoute.length
+  const hasAmenities = amenityCount > 0
+
+  function expandAmenities() {
+    if (!showAmenities) onToggleAmenities()
+  }
+
+  function collapseAmenities() {
+    if (showAmenities) onToggleAmenities()
+  }
+
+  function toggleAmenitiesSheet() {
+    if (!hasAmenities) return
+    onToggleAmenities()
+  }
+
+  const sheetDrag = useSheetDrag({
+    enabled: hasAmenities,
+    expanded: showAmenities,
+    onExpand: expandAmenities,
+    onCollapse: collapseAmenities,
+    scrollRef: amenitiesScrollRef,
+  })
+
+  useLayoutEffect(() => {
+    if (showAmenities && amenitiesScrollRef.current) {
+      amenitiesScrollRef.current.scrollTop = 0
+    }
+  }, [showAmenities])
+
+  const statusBar = (
+    <div className={`nav-status ${showAmenities ? 'nav-status--expanded' : ''}`}>
+      <div className="nav-status-stats">
+        <strong>{remainingMin < 1 ? '<1' : Math.round(remainingMin)} min</strong>
+        <span>
+          {formatDistance(remainingDistance)} · arrive {arrivalText}
+        </span>
+      </div>
+      {hasAmenities && (
+        <button
+          type="button"
+          className={`nav-stops ${showAmenities ? 'nav-stops--active' : ''}`}
+          onClick={toggleAmenitiesSheet}
+          aria-expanded={showAmenities}
+          aria-label={showAmenities ? 'Hide cyclist amenities' : 'Show cyclist amenities'}
+        >
+          <MapPin size={14} />
+          {amenityCount}
+        </button>
+      )}
+      <button className="nav-end" onClick={onEnd}>
+        {arrived ? 'Done' : 'End'}
+      </button>
+    </div>
+  )
 
   return (
     <>
@@ -128,53 +185,43 @@ export default function NavOverlay({
         </div>
       </div>
 
-      <div className={`nav-footer ${showAmenities ? 'nav-footer--amenities' : ''}`}>
-        <div className="nav-amenities" aria-hidden={!showAmenities}>
-          <div className="nav-amenities-inner">
+      <div
+        className={`sheet nav-sheet ${!showAmenities && hasAmenities ? 'sheet--peek' : ''}`}
+        onTouchStart={sheetDrag.onTouchStart}
+        onTouchEnd={sheetDrag.onTouchEnd}
+      >
+        {hasAmenities && (
+          <div className="sheet-drag">
+            <button
+              className="sheet-handle"
+              onClick={toggleAmenitiesSheet}
+              aria-label={showAmenities ? 'Collapse amenities' : 'Expand amenities'}
+            />
+          </div>
+        )}
+
+        {showAmenities && hasAmenities && (
+          <div className="sheet-scroll nav-amenities-scroll" ref={amenitiesScrollRef}>
             <div className="nav-amenities-head">
               <span>Cyclist amenities</span>
               <button
                 type="button"
                 className="nav-amenities-close"
-                onClick={onToggleAmenities}
+                onClick={collapseAmenities}
                 aria-label="Close amenities"
               >
                 <X size={16} />
               </button>
             </div>
-            <div className="nav-amenities-scroll">
-              <AmenitiesPanel
-                parking={amenities.parking}
-                alongRoute={amenities.alongRoute}
-                onFocus={onFocusAmenity}
-              />
-            </div>
+            <AmenitiesPanel
+              parking={amenities.parking}
+              alongRoute={amenities.alongRoute}
+              onFocus={onFocusAmenity}
+            />
           </div>
-        </div>
+        )}
 
-        <div className="nav-status">
-          <div className="nav-status-stats">
-            <strong>{remainingMin < 1 ? '<1' : Math.round(remainingMin)} min</strong>
-            <span>
-              {formatDistance(remainingDistance)} · arrive {arrivalText}
-            </span>
-          </div>
-          {amenityCount > 0 && (
-            <button
-              type="button"
-              className={`nav-stops ${showAmenities ? 'nav-stops--active' : ''}`}
-              onClick={onToggleAmenities}
-              aria-expanded={showAmenities}
-              aria-label={showAmenities ? 'Hide cyclist amenities' : 'Show cyclist amenities'}
-            >
-              <MapPin size={14} />
-              {amenityCount}
-            </button>
-          )}
-          <button className="nav-end" onClick={onEnd}>
-            {arrived ? 'Done' : 'End'}
-          </button>
-        </div>
+        {statusBar}
       </div>
     </>
   )

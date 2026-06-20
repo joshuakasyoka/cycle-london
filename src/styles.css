@@ -150,11 +150,23 @@ body {
   overflow: hidden;
 }
 
+.sheet-drag {
+  flex-shrink: 0;
+  padding: 4px 0 8px;
+  touch-action: none;
+  cursor: grab;
+}
+
 .sheet-handle {
   display: block; width: 36px; height: 4px; border: 0; padding: 0;
-  margin: 4px auto 12px; border-radius: 99px;
+  margin: 0 auto; border-radius: 99px;
   background: var(--surface-3); cursor: grab;
-  flex-shrink: 0;
+  position: relative;
+}
+.sheet-handle::before {
+  content: '';
+  position: absolute;
+  inset: -18px -48px;
 }
 .sheet-handle:active { cursor: grabbing; }
 
@@ -172,7 +184,7 @@ body {
 
 .sheet-peek {
   padding: 0 16px calc(22px + env(safe-area-inset-bottom));
-  touch-action: manipulation;
+  touch-action: pan-x;
   overflow: hidden;
 }
 
@@ -464,42 +476,21 @@ body {
 }
 .compass-btn:hover { background: var(--surface); }
 
-/* ---------- Satnav: bottom status bar ---------- */
-.nav-footer {
-  position: absolute; left: 0; right: 0; bottom: 0; z-index: 20;
-  max-width: 480px; margin: 0 auto;
-  display: flex; flex-direction: column;
-  background: var(--surface-elevated);
-  border: 1px solid var(--border);
-  border-bottom: 0;
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  box-shadow: var(--shadow);
-  overflow: hidden;
+/* ---------- Satnav: bottom sheet (same drawer as planner) ---------- */
+.nav-sheet {
+  z-index: 20;
 }
 
-.nav-amenities {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows .28s ease;
-  overflow: hidden;
+.nav-amenities-scroll {
+  max-height: min(38vh, 280px);
+  padding: 0 16px 12px;
 }
 
-.nav-footer--amenities .nav-amenities {
-  grid-template-rows: 1fr;
-}
-
-.nav-amenities-inner {
-  min-height: 0;
-  overflow: hidden;
-}
-
-.nav-amenities[aria-hidden='true'] {
-  pointer-events: none;
-}
+.nav-amenities-scroll .amenities { margin-top: 0; }
 
 .nav-amenities-head {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 16px 10px;
+  padding: 4px 0 10px;
   font-family: var(--font-mono);
   font-size: 10px; font-weight: 600;
   letter-spacing: 0.12em; text-transform: uppercase;
@@ -515,25 +506,18 @@ body {
   cursor: pointer;
 }
 
-.nav-amenities-scroll {
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-  touch-action: pan-y;
-  max-height: min(38vh, 280px);
-  padding: 0 16px 12px;
-}
-
-.nav-amenities-scroll .amenities { margin-top: 0; }
-
 .nav-status {
   display: flex; align-items: center; gap: 10px;
   padding: 18px 16px calc(18px + env(safe-area-inset-bottom));
-  border-top: 1px solid transparent;
+  flex-shrink: 0;
 }
 
-.nav-footer--amenities .nav-status {
-  border-top-color: var(--border);
+.nav-sheet.sheet--peek .nav-status {
+  padding-top: 0;
+}
+
+.nav-status--expanded {
+  border-top: 1px solid var(--border);
 }
 
 .nav-status-stats {
