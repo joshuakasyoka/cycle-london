@@ -9,10 +9,14 @@ import {
   ArrowDownLeft,
   Bike,
   Flag,
+  MapPin,
   Volume2,
   VolumeX,
+  X,
   type LucideIcon,
 } from 'lucide-react'
+import AmenitiesPanel from './AmenitiesPanel'
+import type { RouteAmenities, Amenity } from '../services/amenities'
 import type { Maneuver, ManeuverType } from '../services/navigation'
 import { formatDistance } from '../services/navigation'
 
@@ -31,6 +35,10 @@ interface Props {
   hazardAhead: boolean
   onToggleMute: () => void
   onEnd: () => void
+  amenities: RouteAmenities
+  showAmenities: boolean
+  onToggleAmenities: () => void
+  onFocusAmenity: (a: Amenity) => void
 }
 
 const GPS_LABELS: Record<GpsStatus, { label: string; color: string }> = {
@@ -72,10 +80,15 @@ export default function NavOverlay({
   hazardAhead,
   onToggleMute,
   onEnd,
+  amenities,
+  showAmenities,
+  onToggleAmenities,
+  onFocusAmenity,
 }: Props) {
   const arrival = new Date(Date.now() + remainingMin * 60000)
   const arrivalText = arrival.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   const gps = GPS_LABELS[gpsStatus]
+  const amenityCount = amenities.parking.length + amenities.alongRoute.length
 
   return (
     <>
@@ -115,16 +128,53 @@ export default function NavOverlay({
         </div>
       </div>
 
-      <div className="nav-status">
-        <div className="nav-status-stats">
-          <strong>{remainingMin < 1 ? '<1' : Math.round(remainingMin)} min</strong>
-          <span>
-            {formatDistance(remainingDistance)} · arrive {arrivalText}
-          </span>
+      <div className={`nav-footer ${showAmenities ? 'nav-footer--amenities' : ''}`}>
+        <div className="nav-amenities" aria-hidden={!showAmenities}>
+          <div className="nav-amenities-inner">
+            <div className="nav-amenities-head">
+              <span>Cyclist amenities</span>
+              <button
+                type="button"
+                className="nav-amenities-close"
+                onClick={onToggleAmenities}
+                aria-label="Close amenities"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="nav-amenities-scroll">
+              <AmenitiesPanel
+                parking={amenities.parking}
+                alongRoute={amenities.alongRoute}
+                onFocus={onFocusAmenity}
+              />
+            </div>
+          </div>
         </div>
-        <button className="nav-end" onClick={onEnd}>
-          {arrived ? 'Done' : 'End'}
-        </button>
+
+        <div className="nav-status">
+          <div className="nav-status-stats">
+            <strong>{remainingMin < 1 ? '<1' : Math.round(remainingMin)} min</strong>
+            <span>
+              {formatDistance(remainingDistance)} · arrive {arrivalText}
+            </span>
+          </div>
+          {amenityCount > 0 && (
+            <button
+              type="button"
+              className={`nav-stops ${showAmenities ? 'nav-stops--active' : ''}`}
+              onClick={onToggleAmenities}
+              aria-expanded={showAmenities}
+              aria-label={showAmenities ? 'Hide cyclist amenities' : 'Show cyclist amenities'}
+            >
+              <MapPin size={14} />
+              {amenityCount}
+            </button>
+          )}
+          <button className="nav-end" onClick={onEnd}>
+            {arrived ? 'Done' : 'End'}
+          </button>
+        </div>
       </div>
     </>
   )

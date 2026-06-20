@@ -3,10 +3,11 @@ import { AlertTriangle, Eye, MapPin, Play, X } from 'lucide-react'
 import LocationInput from './components/LocationInput'
 import MapView from './components/MapView'
 import NavOverlay, { type GpsStatus } from './components/NavOverlay'
+import AmenitiesPanel from './components/AmenitiesPanel'
 import { reverseGeocode, type Place } from './services/geocode'
 import { addHazard, listHazards, removeHazard, voteHazard, type HazardSegment } from './services/hazards'
 import { fetchRoute, fetchRouteFromPosition, snapToRoad, type RouteResult } from './services/route'
-import { fetchRouteAmenities, amenityKindLabel, type Amenity, type RouteAmenities } from './services/amenities'
+import { fetchRouteAmenities, type Amenity, type RouteAmenities } from './services/amenities'
 import { quietRouteShare, setQuietStreetLines } from './services/lowTrafficRoutes'
 import { fetchRouteContext } from './services/mapFeatures'
 import { bindFemaleVoice, pickFemaleVoice } from './services/voice'
@@ -51,6 +52,7 @@ export default function App() {
   const [quietShare, setQuietShare]     = useState(0)
   const [amenities, setAmenities]       = useState<RouteAmenities>({ parking: [], alongRoute: [], all: [] })
   const [focusedAmenity, setFocusedAmenity] = useState<Amenity | null>(null)
+  const [showNavAmenities, setShowNavAmenities] = useState(false)
 
   // Navigation state
   const [navigating, setNavigating] = useState(false)
@@ -75,8 +77,6 @@ export default function App() {
   const rerouteInFlightRef = useRef(false)
   const lastRerouteAtRef = useRef(0)
   const offRouteSinceRef = useRef<number | null>(null)
-  const peekTouchYRef = useRef(0)
-
   const voiceRef = useRef<SpeechSynthesisVoice | null>(null)
 
   useEffect(() => { endRef.current = end }, [end])
@@ -107,15 +107,6 @@ export default function App() {
       expandSheet()
       return true
     })
-  }
-
-  function handlePeekTouchStart(e: React.TouchEvent) {
-    peekTouchYRef.current = e.touches[0]?.clientY ?? 0
-  }
-
-  function handlePeekTouchEnd(e: React.TouchEvent) {
-    const endY = e.changedTouches[0]?.clientY ?? peekTouchYRef.current
-    if (peekTouchYRef.current - endY > 28) expandSheet()
   }
 
   // Load any hazards reported on this device
@@ -328,6 +319,7 @@ export default function App() {
     setNavDist(0)
     setArrived(false)
     setNavigating(true)
+    setShowNavAmenities(false)
 
     // Attempt live GPS first
     if ('geolocation' in navigator) {
@@ -358,6 +350,8 @@ export default function App() {
     }
     if ('speechSynthesis' in window) window.speechSynthesis.cancel()
     setNavigating(false)
+    setShowNavAmenities(false)
+    setFocusedAmenity(null)
     setArrived(false)
     setGpsStatus('sim')
     setGpsAccuracy(null)
@@ -530,7 +524,7 @@ export default function App() {
         onMapClick={handleMapClick}
         onRemoveHazard={handleRemoveHazard}
         onVoteHazard={handleVoteHazard}
-        amenities={amenities.all}
+        amenities={navigating && !showNavAmenities ? [] : amenities.all}
         focusAmenity={focusedAmenity}
       />
 
@@ -584,6 +578,10 @@ export default function App() {
           hazardAhead={hazardAhead}
           onToggleMute={() => setMuted(m => !m)}
           onEnd={endRide}
+          amenities={amenities}
+          showAmenities={showNavAmenities}
+          onToggleAmenities={() => setShowNavAmenities((s) => !s)}
+          onFocusAmenity={setFocusedAmenity}
         />
       ) : reporting ? null : (
         <div className={`sheet ${collapsed && route ? 'sheet--peek' : ''}`}>
@@ -593,11 +591,7 @@ export default function App() {
             aria-label={collapsed && route ? 'Expand panel' : route ? 'Collapse panel' : 'Panel handle'}
           />
           {collapsed && route ? (
-            <div
-              className="sheet-peek"
-              onTouchStart={handlePeekTouchStart}
-              onTouchEnd={handlePeekTouchEnd}
-            >
+            <div className="sheet-peek">
               <RoutePeekBar
                 route={route}
                 routeHazards={routeHazards}
@@ -668,53 +662,11 @@ export default function App() {
                     />
                   )}
                   {(amenities.parking.length > 0 || amenities.alongRoute.length > 0) && (
-                    <div className="amenities">
-                      {amenities.parking.length > 0 && (
-                        <div className="amenity-block">
-                          <h3 className="amenity-heading">Bike parking near destination</h3>
-                          <ul className="amenity-list">
-                            {amenities.parking.slice(0, 4).map((a) => (
-                              <li key={a.id}>
-                                <button type="button" className="amenity-item" onClick={() => setFocusedAmenity(a)}>
-                                  <span className="amenity-icon amenity-icon--parking">P</span>
-                                  <span className="amenity-text">
-                                    <span className="amenity-row">
-                                      <span className="amenity-name">{a.name}</span>
-                                      <span className="amenity-kind">{amenityKindLabel(a.kind)}</span>
-                                    </span>
-                                    {(a.note || a.capacity) && (
-                                      <span className="amenity-note">
-                                        {[a.capacity ? `${a.capacity} spaces` : null, a.note].filter(Boolean).join(' · ')}
-                                      </span>
-                                    )}
-                                  </span>
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                      {amenities.alongRoute.length > 0 && (
-                        <div className="amenity-block">
-                          <h3 className="amenity-heading">On your route</h3>
-                          <ul className="amenity-list amenity-list--compact">
-                            {amenities.alongRoute.slice(0, 5).map((a) => (
-                              <li key={a.id}>
-                                <button type="button" className="amenity-item" onClick={() => setFocusedAmenity(a)}>
-                                  <span className={`amenity-icon amenity-icon--${a.kind}`}>
-                                    {a.kind === 'pump' ? '⬤' : a.kind === 'repair' ? '✕' : '☕'}
-                                  </span>
-                                  <span className="amenity-row">
-                                    <span className="amenity-name">{a.name}</span>
-                                    <span className="amenity-kind">{amenityKindLabel(a.kind)}</span>
-                                  </span>
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                    </div>
+                    <AmenitiesPanel
+                      parking={amenities.parking}
+                      alongRoute={amenities.alongRoute}
+                      onFocus={setFocusedAmenity}
+                    />
                   )}
                 </div>
               )}
