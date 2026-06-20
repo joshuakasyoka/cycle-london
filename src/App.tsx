@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, ArrowUpDown, Bike, Eye, MapPin, Play, X } from 'lucide-react'
+import { AlertTriangle, Eye, MapPin, Play, X } from 'lucide-react'
 import LocationInput from './components/LocationInput'
 import MapView from './components/MapView'
 import NavOverlay, { type GpsStatus } from './components/NavOverlay'
 import { reverseGeocode, type Place } from './services/geocode'
 import { addHazard, listHazards, removeHazard, voteHazard, type HazardSegment } from './services/hazards'
-import { fetchRoute, snapToRoad, type RouteResult } from './services/route'
+import { fetchRoute, fetchRouteFromPosition, snapToRoad, type RouteResult } from './services/route'
+import { fetchRouteAmenities, amenityKindLabel, type Amenity, type RouteAmenities } from './services/amenities'
+import { quietRouteShare, setQuietStreetLines } from './services/lowTrafficRoutes'
+import { fetchRouteContext } from './services/mapFeatures'
 import {
   buildNavRoute,
   formatDistance,
@@ -19,7 +22,9 @@ import {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const SIM_SPEED = 6.5          // m/s (~23 km/h) — used only in demo mode
-const OFF_ROUTE_THRESHOLD = 40 // metres — beyond this we warn the rider
+const OFF_ROUTE_THRESHOLD = 40  // metres — beyond this we warn the rider
+const REROUTE_AFTER_MS = 4500   // sustained off-route before recalculating
+const REROUTE_COOLDOWN_MS = 18000
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
@@ -42,6 +47,9 @@ export default function App() {
   const [hazardNote, setHazardNote]   = useState('')
   const [showHazardList, setShowHazardList] = useState(false)
   const [preview, setPreview]         = useState<{ id: string; token: number } | null>(null)
+  const [quietShare, setQuietShare]     = useState(0)
+  const [amenities, setAmenities]       = useState<RouteAmenities>({ parking: [], alongRoute: [], all: [] })
+  const [focusedAmenity, setFocusedAmenity] = useState<Amenity | null>(null)
 
   // Navigation state
   const [navigating, setNavigating] = useState(false)
@@ -62,11 +70,53 @@ export default function App() {
   const gpsActiveRef   = useRef(false)  // true once watchPosition fires at least once
   const hazardsRef         = useRef<HazardSegment[]>([])
   const announcedHazardsRef = useRef<Set<string>>(new Set())
+  const endRef = useRef<Place | null>(null)
+  const rerouteInFlightRef = useRef(false)
+  const lastRerouteAtRef = useRef(0)
+  const offRouteSinceRef = useRef<number | null>(null)
+  const sheetScrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => { endRef.current = end }, [end])
 
   // Keep mutedRef in sync so speak() doesn't close over stale state
   useEffect(() => { mutedRef.current = muted }, [muted])
   // Keep hazardsRef in sync so callbacks don't close over stale state
   useEffect(() => { hazardsRef.current = hazards }, [hazards])
+
+  // Peek mode: keep the route summary bar pinned at the bottom of the scroll area.
+  useEffect(() => {
+    const el = sheetScrollRef.current
+    if (!el || !collapsed || !route) return
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight - el.clientHeight
+    })
+  }, [collapsed, route])
+
+  function scrollSheetToPeek() {
+    const el = sheetScrollRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight - el.clientHeight
+  }
+
+  function handleSheetScroll() {
+    const el = sheetScrollRef.current
+    if (!el || !route || !collapsed) return
+    const maxScroll = el.scrollHeight - el.clientHeight
+    if (maxScroll > 0 && el.scrollTop < maxScroll - 24) {
+      setCollapsed(false)
+    }
+  }
+
+  function toggleSheet() {
+    if (!route) return
+    if (collapsed) {
+      setCollapsed(false)
+      sheetScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
+    } else {
+      setCollapsed(true)
+      requestAnimationFrame(scrollSheetToPeek)
+    }
+  }
 
   // Load any hazards reported on this device
   useEffect(() => { listHazards().then(setHazards) }, [])
@@ -158,10 +208,44 @@ export default function App() {
     )
   }
 
+  const applyRouteDuringNav = useCallback((newRoute: RouteResult, lat: number, lon: number) => {
+    setRoute(newRoute)
+    const nav = buildNavRoute(newRoute.coordinates)
+    navRouteRef.current = nav
+    const proj = projectOntoRoute(nav, lat, lon)
+    distRef.current = proj.dist
+    setNavDist(proj.dist)
+    announcedRef.current = new Set()
+    announcedHazardsRef.current = new Set()
+    setGpsStatus('live')
+  }, [])
+
+  const rerouteFromPosition = useCallback(async (lat: number, lon: number) => {
+    const dest = endRef.current
+    if (!dest || rerouteInFlightRef.current) return
+    rerouteInFlightRef.current = true
+    setGpsStatus('rerouting')
+    if (!announcedRef.current.has(-2)) {
+      announcedRef.current.add(-2)
+      speak('Recalculating route')
+    }
+    try {
+      const newRoute = await fetchRouteFromPosition(lat, lon, dest)
+      applyRouteDuringNav(newRoute, lat, lon)
+      announcedRef.current.delete(-2)
+    } catch {
+      setGpsStatus('off-route')
+    } finally {
+      rerouteInFlightRef.current = false
+      lastRerouteAtRef.current = Date.now()
+      offRouteSinceRef.current = null
+    }
+  }, [applyRouteDuringNav, speak])
+
   // ── GPS position handler ───────────────────────────────────────────────────
   const onGpsFix = useCallback((pos: GeolocationPosition) => {
     const nav = navRouteRef.current
-    if (!nav) return
+    if (!nav || rerouteInFlightRef.current) return
 
     gpsActiveRef.current = true
     const acc = pos.coords.accuracy
@@ -170,9 +254,21 @@ export default function App() {
     const proj = projectOntoRoute(nav, pos.coords.latitude, pos.coords.longitude)
     const isOffRoute = proj.offRouteMeters > OFF_ROUTE_THRESHOLD
 
-    setGpsStatus(isOffRoute ? 'off-route' : 'live')
+    if (isOffRoute) {
+      if (offRouteSinceRef.current == null) offRouteSinceRef.current = Date.now()
+      setGpsStatus('off-route')
 
-    // Use the snapped distance to drive nav
+      const offMs = Date.now() - offRouteSinceRef.current
+      const sinceReroute = Date.now() - lastRerouteAtRef.current
+      if (offMs >= REROUTE_AFTER_MS && sinceReroute >= REROUTE_COOLDOWN_MS && endRef.current) {
+        void rerouteFromPosition(pos.coords.latitude, pos.coords.longitude)
+        return
+      }
+    } else {
+      offRouteSinceRef.current = null
+      setGpsStatus('live')
+    }
+
     distRef.current = proj.dist
     setNavDist(proj.dist)
 
@@ -182,7 +278,7 @@ export default function App() {
       maybeAnnounce(nav, proj.dist)
       maybeAnnounceHazard(nav, proj.dist)
     }
-  }, [markArrived, maybeAnnounce, maybeAnnounceHazard])
+  }, [markArrived, maybeAnnounce, maybeAnnounceHazard, rerouteFromPosition])
 
   const onGpsError = useCallback((err: GeolocationPositionError) => {
     console.warn('GPS error:', err.message)
@@ -213,6 +309,9 @@ export default function App() {
     announcedHazardsRef.current = new Set()
     distRef.current = 0
     gpsActiveRef.current = false
+    rerouteInFlightRef.current = false
+    lastRerouteAtRef.current = 0
+    offRouteSinceRef.current = null
     setNavDist(0)
     setArrived(false)
     setNavigating(true)
@@ -295,7 +394,7 @@ export default function App() {
   // ── Derived view-model ─────────────────────────────────────────────────────
   const nav = navRouteRef.current
   const navPosition = navigating && nav
-    ? (gpsStatus === 'live' || gpsStatus === 'off-route' || gpsStatus === 'acquiring')
+    ? (gpsStatus === 'live' || gpsStatus === 'off-route' || gpsStatus === 'rerouting' || gpsStatus === 'acquiring')
         // During GPS: use the last projected position from distRef
         ? positionAt(nav, distRef.current)
         : positionAt(nav, navDist)
@@ -318,6 +417,28 @@ export default function App() {
     setShowHazardList(false)
     setPreview(null)
   }, [route])
+
+  // Load OSM street geometry along the route for the low-traffic % stat.
+  useEffect(() => {
+    if (!route) {
+      setQuietShare(0)
+      setAmenities({ parking: [], alongRoute: [], all: [] })
+      setFocusedAmenity(null)
+      return
+    }
+    let cancelled = false
+    fetchRouteContext(route.coordinates).then((ctx) => {
+      if (cancelled) return
+      setQuietStreetLines(ctx.streetLines)
+      setQuietShare(quietRouteShare(route.coordinates))
+    })
+    if (end) {
+      fetchRouteAmenities(route.coordinates, end).then((a) => {
+        if (!cancelled) setAmenities(a)
+      })
+    }
+    return () => { cancelled = true }
+  }, [route, end])
 
   function previewHazard(h: HazardSegment) {
     setPreview({ id: h.id, token: Date.now() })
@@ -396,6 +517,8 @@ export default function App() {
         onMapClick={handleMapClick}
         onRemoveHazard={handleRemoveHazard}
         onVoteHazard={handleVoteHazard}
+        amenities={amenities.all}
+        focusAmenity={focusedAmenity}
       />
 
       {!navigating && (
@@ -464,98 +587,151 @@ export default function App() {
           onToggleMute={() => setMuted(m => !m)}
           onEnd={endRide}
         />
-      ) : reporting ? null : collapsed && route ? (
-        <div className="sheet sheet--route-mini" onClick={() => setCollapsed(false)}>
+      ) : reporting ? null : (
+        <div className={`sheet ${collapsed && route ? 'sheet--peek' : ''}`}>
           <button
             className="sheet-handle"
-            onClick={(e) => { e.stopPropagation(); setCollapsed(false) }}
-            aria-label="Expand panel"
+            onClick={toggleSheet}
+            aria-label={collapsed && route ? 'Expand panel' : route ? 'Collapse panel' : 'Panel handle'}
           />
-          <div className="mini-route">
-            <div className="mini-route-info">
-              <span>{route.distanceKm.toFixed(1)} km</span>
-              <span className="mini-route-sep">·</span>
-              <span>{Math.round(route.durationMin)} min</span>
-              {routeHazards.length > 0 && (
-                <button
-                  className="hazard-flag"
-                  onClick={(e) => { e.stopPropagation(); setShowHazardList((s) => !s) }}
-                >
-                  <AlertTriangle size={13} /> {routeHazards.length}
-                </button>
+          <div
+            className="sheet-scroll"
+            ref={sheetScrollRef}
+            onScroll={handleSheetScroll}
+          >
+            <div className="sheet-body">
+              <header className="brand">
+                <h1>Cycle London</h1>
+                <p className="brand-sub">Open map routing · London</p>
+              </header>
+
+              <div className="inputs">
+                <LocationInput
+                  icon={<MapPin size={15} strokeWidth={2} />}
+                  placeholder="Start — e.g. King's Cross"
+                  value={start}
+                  onChange={setStart}
+                  onLocate={useMyLocation}
+                  locating={locating}
+                />
+                <LocationInput
+                  icon={<MapPin size={15} strokeWidth={2} />}
+                  placeholder="Destination — e.g. London Bridge"
+                  value={end}
+                  onChange={setEnd}
+                  onSwap={swap}
+                />
+              </div>
+
+              <button className="cta" disabled={!start || !end || loading} onClick={() => findRoute()}>
+                {loading ? 'Finding the calmest route…' : 'Find bike route'}
+              </button>
+
+              {error && <p className="error">{error}</p>}
+
+              {route && (
+                <div className="result">
+                  <div className="stats">
+                    <Stat value={`${route.distanceKm.toFixed(1)} km`} label="Distance" />
+                    <Stat value={`${Math.round(route.durationMin)} min`} label="Ride time" />
+                    <Stat value={`${Math.round(quietShare * 100)}%`} label="Low traffic" />
+                    <Stat value={`${Math.round(route.ascentM)} m`} label="Climb" />
+                  </div>
+                  <div className="result-actions">
+                    <div className="start-ride-row">
+                      <button className="start-ride" onClick={startRide}>
+                        <Play size={20} fill="currentColor" /> Start ride
+                      </button>
+                      {routeHazards.length > 0 && (
+                        <button className="hazard-flag" onClick={() => setShowHazardList((s) => !s)}>
+                          <AlertTriangle size={14} /> {routeHazards.length}
+                        </button>
+                      )}
+                    </div>
+                    <button className="trace" onClick={() => setTraceToken(t => t + 1)}>
+                      <Eye size={14} /> Preview route
+                    </button>
+                  </div>
+                  {(amenities.parking.length > 0 || amenities.alongRoute.length > 0) && (
+                    <div className="amenities">
+                      {amenities.parking.length > 0 && (
+                        <div className="amenity-block">
+                          <h3 className="amenity-heading">Bike parking near destination</h3>
+                          <ul className="amenity-list">
+                            {amenities.parking.slice(0, 4).map((a) => (
+                              <li key={a.id}>
+                                <button type="button" className="amenity-item" onClick={() => setFocusedAmenity(a)}>
+                                  <span className="amenity-icon amenity-icon--parking">P</span>
+                                  <span className="amenity-text">
+                                    <span className="amenity-row">
+                                      <span className="amenity-name">{a.name}</span>
+                                      <span className="amenity-kind">{amenityKindLabel(a.kind)}</span>
+                                    </span>
+                                    {(a.note || a.capacity) && (
+                                      <span className="amenity-note">
+                                        {[a.capacity ? `${a.capacity} spaces` : null, a.note].filter(Boolean).join(' · ')}
+                                      </span>
+                                    )}
+                                  </span>
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {amenities.alongRoute.length > 0 && (
+                        <div className="amenity-block">
+                          <h3 className="amenity-heading">On your route</h3>
+                          <ul className="amenity-list amenity-list--compact">
+                            {amenities.alongRoute.slice(0, 5).map((a) => (
+                              <li key={a.id}>
+                                <button type="button" className="amenity-item" onClick={() => setFocusedAmenity(a)}>
+                                  <span className={`amenity-icon amenity-icon--${a.kind}`}>
+                                    {a.kind === 'pump' ? '⬤' : a.kind === 'repair' ? '✕' : '☕'}
+                                  </span>
+                                  <span className="amenity-row">
+                                    <span className="amenity-name">{a.name}</span>
+                                    <span className="amenity-kind">{amenityKindLabel(a.kind)}</span>
+                                  </span>
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               )}
             </div>
-            <button className="start-ride" onClick={(e) => { e.stopPropagation(); startRide() }}>
-              <Play size={20} fill="currentColor" /> Start ride
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div className="sheet">
-          <button
-            className="sheet-handle"
-            onClick={() => setCollapsed(c => !c)}
-            aria-label="Toggle panel"
-          />
 
-          <header className="brand">
-            <span className="brand-mark"><Bike size={20} /></span>
-            <div>
-              <h1>Cycle London</h1>
-              <p>Bike-friendly routes from open map data</p>
-            </div>
-          </header>
-
-          <div className="inputs">
-            <LocationInput
-              icon={<MapPin size={15} color="#16a34a" />}
-              placeholder="Start — e.g. King's Cross"
-              value={start}
-              onChange={setStart}
-              onLocate={useMyLocation}
-              locating={locating}
-            />
-            <button className="swap" onClick={swap} aria-label="Swap start and end" title="Swap">
-              <ArrowUpDown size={16} />
-            </button>
-            <LocationInput
-              icon={<MapPin size={15} color="#ef4444" />}
-              placeholder="Destination — e.g. London Bridge"
-              value={end}
-              onChange={setEnd}
-            />
-          </div>
-
-          <button className="cta" disabled={!start || !end || loading} onClick={() => findRoute()}>
-            {loading ? 'Finding the calmest route…' : 'Find bike route'}
-          </button>
-
-          {error && <p className="error">{error}</p>}
-
-          {route && (
-            <div className="result">
-              <div className="stats">
-                <Stat value={`${route.distanceKm.toFixed(1)} km`} label="Distance" />
-                <Stat value={`${Math.round(route.durationMin)} min`} label="Ride time" />
-                <Stat value={`${Math.round(route.ascentM)} m`} label="Climb" />
-              </div>
-              <div className="result-actions">
-                <div className="start-ride-row">
+            {route && (
+              <div className="sheet-peek">
+                <div className="mini-route">
+                  <div className="mini-route-info">
+                    <span className="mini-route-stat">
+                      <span className="mini-route-num">{route.distanceKm.toFixed(1)}</span> km
+                    </span>
+                    <span className="mini-route-sep" aria-hidden>·</span>
+                    <span className="mini-route-stat">
+                      <span className="mini-route-num">{Math.round(route.durationMin)}</span> min
+                    </span>
+                    {routeHazards.length > 0 && (
+                      <button
+                        className="hazard-flag"
+                        onClick={() => setShowHazardList((s) => !s)}
+                      >
+                        <AlertTriangle size={13} /> {routeHazards.length}
+                      </button>
+                    )}
+                  </div>
                   <button className="start-ride" onClick={startRide}>
                     <Play size={20} fill="currentColor" /> Start ride
                   </button>
-                  {routeHazards.length > 0 && (
-                    <button className="hazard-flag" onClick={() => setShowHazardList((s) => !s)}>
-                      <AlertTriangle size={14} /> {routeHazards.length}
-                    </button>
-                  )}
                 </div>
-                <button className="trace" onClick={() => setTraceToken(t => t + 1)}>
-                  <Eye size={14} /> Preview route
-                </button>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -565,8 +741,8 @@ export default function App() {
 function Stat({ value, label }: { value: string; label: string }) {
   return (
     <div className="stat">
-      <span className="stat-value">{value}</span>
       <span className="stat-label">{label}</span>
+      <span className="stat-value">{value}</span>
     </div>
   )
 }

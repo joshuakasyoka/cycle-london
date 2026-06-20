@@ -16,7 +16,7 @@ import {
 import type { Maneuver, ManeuverType } from '../services/navigation'
 import { formatDistance } from '../services/navigation'
 
-export type GpsStatus = 'acquiring' | 'live' | 'off-route' | 'denied' | 'sim'
+export type GpsStatus = 'acquiring' | 'live' | 'off-route' | 'rerouting' | 'denied' | 'sim'
 
 interface Props {
   next: Maneuver
@@ -34,11 +34,12 @@ interface Props {
 }
 
 const GPS_LABELS: Record<GpsStatus, { label: string; color: string }> = {
-  acquiring: { label: 'Acquiring GPS…', color: '#f59e0b' },
-  live:      { label: 'Live GPS',       color: '#16a34a' },
-  'off-route': { label: 'Off route',    color: '#f97316' },
-  denied:    { label: 'GPS denied',     color: '#ef4444' },
-  sim:       { label: 'Demo ride',      color: '#6b7280' },
+  acquiring: { label: 'Acquiring GPS…', color: '#888888' },
+  live:      { label: 'Live GPS',       color: '#1a1a1a' },
+  'off-route': { label: 'Off route',    color: '#888888' },
+  rerouting: { label: 'Recalculating…', color: '#1a1a1a' },
+  denied:    { label: 'GPS denied',     color: '#888888' },
+  sim:       { label: 'Demo ride',      color: '#888888' },
 }
 
 const MANEUVER_ICONS: Record<ManeuverType, LucideIcon> = {

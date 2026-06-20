@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
-import { LocateFixed } from 'lucide-react'
+import { Compass, LocateFixed } from 'lucide-react'
 import { DANGER_ZONES } from '../data/dangerZones'
 import type { Place } from '../services/geocode'
+import {
+  fetchRouteContext,
+  type FeatureLayer,
+  type RouteMapContext,
+} from '../services/mapFeatures'
+import type { Amenity, AmenityKind } from '../services/amenities'
 import type { RouteResult } from '../services/route'
 import type { HazardSegment } from '../services/hazards'
 
@@ -28,9 +34,46 @@ interface Props {
   onMapClick: (lat: number, lon: number) => void
   onRemoveHazard: (id: string) => void
   onVoteHazard: (id: string, vote: 1 | -1) => void
+  amenities: Amenity[]
+  focusAmenity: Amenity | null
 }
 
 const LONDON_CENTER: L.LatLngExpression = [51.5074, -0.1278]
+
+const HAZARD_COLOR = '#FF1B1B'
+
+const DANGER_ZONE_STYLE = {
+  color: HAZARD_COLOR,
+  weight: 1.5,
+  opacity: 0.55,
+  fillColor: HAZARD_COLOR,
+  fillOpacity: 0.18,
+}
+
+const HAZARD_LINE_STYLE = {
+  color: HAZARD_COLOR,
+  weight: 5,
+  opacity: 0.55,
+  dashArray: '2 10',
+  lineCap: 'round' as const,
+}
+
+const HAZARD_PENDING_LINE_STYLE = {
+  color: HAZARD_COLOR,
+  weight: 5,
+  opacity: 0.55,
+  dashArray: '6 8',
+  lineCap: 'round' as const,
+}
+
+const HAZARD_POINT_STYLE = {
+  radius: 7,
+  color: HAZARD_COLOR,
+  weight: 2,
+  fillColor: HAZARD_COLOR,
+  fillOpacity: 0.55,
+  opacity: 0.55,
+}
 
 const PIN_SVG = (color: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="${color}" stroke="#0a0a0c" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"/><circle cx="12" cy="10" r="3"/></svg>`
@@ -43,6 +86,152 @@ const THUMBS_DOWN_SVG =
 
 const LAYERS_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></svg>'
+
+const AREA_STYLES: Record<'park' | 'pedestrian' | 'living-street' | 'canal', {
+  fill: string
+  stroke: string
+  fillOpacity: number
+  weight: number
+}> = {
+  park: { fill: '#4ade80', stroke: '#16a34a', fillOpacity: 0.28, weight: 1.5 },
+  pedestrian: { fill: '#c4b5fd', stroke: '#7c3aed', fillOpacity: 0.3, weight: 1.5 },
+  'living-street': { fill: '#fcd34d', stroke: '#d97706', fillOpacity: 0.28, weight: 2 },
+  canal: { fill: '#7dd3fc', stroke: '#0284c7', fillOpacity: 0, weight: 4 },
+}
+
+type OverlayStyleType = keyof typeof AREA_STYLES
+type StyleMode = 'muted' | 'emphasis'
+
+function overlayStyle(type: OverlayStyleType, mode: StyleMode, feature?: GeoJSON.Feature): L.PathOptions {
+  const s = AREA_STYLES[type]
+  const muted = mode === 'muted'
+  const geom = feature?.geometry
+  const isPoly = geom?.type === 'Polygon' || geom?.type === 'MultiPolygon'
+  if (isPoly) {
+    return {
+      color: s.stroke,
+      weight: muted ? 1 : 2,
+      fillColor: s.fill,
+      fillOpacity: muted ? s.fillOpacity * 0.55 : s.fillOpacity,
+      opacity: muted ? 0.35 : 0.92,
+    }
+  }
+  const weight =
+    (type === 'living-street' ? 5 : type === 'pedestrian' ? 4 : type === 'canal' ? 4 : 3) * (muted ? 0.9 : 1.1)
+  return {
+    color: s.stroke,
+    weight,
+    opacity: muted ? 0.28 : 0.95,
+    lineCap: 'round',
+    lineJoin: 'round',
+  }
+}
+
+interface TaggedPath extends L.Path {
+  _overlayType?: OverlayStyleType
+}
+
+const OVERLAY_KEYS: Record<string, FeatureLayer> = {
+  'Parks & green spaces': 'parks',
+  'Pedestrian & car-free': 'pedestrian',
+  'Low-traffic neighbourhoods': 'livingStreets',
+  'Canals & towpaths': 'canals',
+}
+
+function areaTooltip(name: string, note?: string) {
+  return `<span class="tt-label">${name}${note ? ` — ${note}` : ''}</span>`
+}
+
+function tooltipAnchorOrigin(el: HTMLElement): string {
+  if (el.classList.contains('leaflet-tooltip-top')) return 'bottom center'
+  if (el.classList.contains('leaflet-tooltip-bottom')) return 'top center'
+  if (el.classList.contains('leaflet-tooltip-left')) return 'center right'
+  if (el.classList.contains('leaflet-tooltip-right')) return 'center left'
+  return 'center center'
+}
+
+/** Keep tooltip boxes readable when the map rotor is spun (track-up or manual twist). */
+function setTooltipUpright(el: HTMLElement, degrees: number) {
+  if (!degrees) {
+    el.style.rotate = ''
+    el.style.transformOrigin = ''
+    el.style.transition = ''
+    return
+  }
+  el.style.transformOrigin = tooltipAnchorOrigin(el)
+  el.style.rotate = `${degrees}deg`
+}
+
+function syncAllTooltipsUpright(container: HTMLElement, degrees: number, transition = '') {
+  container.querySelectorAll<HTMLElement>('.leaflet-tooltip').forEach((el) => {
+    el.style.transition = transition
+    setTooltipUpright(el, degrees)
+  })
+}
+
+const ROUTE_LAYERS: FeatureLayer[] = ['parks', 'pedestrian', 'livingStreets', 'canals']
+
+function buildCyclingAreaLayers() {
+  return {
+    parks: L.layerGroup(),
+    pedestrian: L.layerGroup(),
+    livingStreets: L.layerGroup(),
+    canals: L.layerGroup(),
+  }
+}
+
+function streetLabel(props: Record<string, unknown>): string {
+  const name = props.name
+  if (typeof name === 'string' && name) return name
+  const highway = props.highway
+  if (typeof highway === 'string') return highway.replace(/_/g, ' ')
+  return 'Quiet street'
+}
+
+function geoJsonStyle(type: OverlayStyleType) {
+  return (feature?: GeoJSON.Feature) => overlayStyle(type, 'muted', feature)
+}
+
+function bindOverlayInteractions(
+  path: TaggedPath,
+  type: OverlayStyleType,
+  feature: GeoJSON.Feature,
+  selectedRef: { current: L.Layer | null },
+  routeRef: { current: L.Polyline | null },
+) {
+  path._overlayType = type
+  path.on('mouseover', () => {
+    path.setStyle(overlayStyle(type, 'emphasis', feature))
+    path.bringToFront()
+    routeRef.current?.bringToFront()
+  })
+  path.on('mouseout', () => {
+    if (selectedRef.current === path) return
+    path.setStyle(overlayStyle(type, 'muted', feature))
+  })
+  path.on('click', (e) => {
+    L.DomEvent.stopPropagation(e)
+    if (selectedRef.current && selectedRef.current !== path) {
+      const prev = selectedRef.current as TaggedPath
+      if (prev._overlayType) prev.setStyle(overlayStyle(prev._overlayType, 'muted'))
+    }
+    selectedRef.current = path
+    path.setStyle(overlayStyle(type, 'emphasis', feature))
+    path.bringToFront()
+    routeRef.current?.bringToFront()
+    path.openTooltip()
+  })
+}
+
+function amenityMarkerIcon(kind: AmenityKind, active = false) {
+  const glyph = kind === 'parking' ? 'P' : kind === 'pump' ? '·' : kind === 'repair' ? '✕' : 'C'
+  return L.divIcon({
+    className: 'amenity-marker-wrap',
+    html: `<div class="amenity-marker amenity-marker--${kind}${active ? ' amenity-marker--active' : ''}">${glyph}</div>`,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+  })
+}
 
 function buildHazardPopup(
   h: HazardSegment,
@@ -136,6 +325,8 @@ export default function MapView({
   onMapClick,
   onRemoveHazard,
   onVoteHazard,
+  amenities,
+  focusAmenity,
 }: Props) {
   const elRef = useRef<HTMLDivElement>(null)
   const rotorRef = useRef<HTMLDivElement>(null)
@@ -143,6 +334,9 @@ export default function MapView({
   const startMarker = useRef<L.Marker | null>(null)
   const endMarker = useRef<L.Marker | null>(null)
   const routeLine = useRef<L.Polyline | null>(null)
+  const routeLineRef = useRef<L.Polyline | null>(null)
+  const routeUnderlay = useRef<L.Polyline | null>(null)
+  const selectedOverlayRef = useRef<L.Layer | null>(null)
   const progressLine = useRef<L.Polyline | null>(null)
   const cyclist = useRef<L.Marker | null>(null)
   const animRef = useRef<number | null>(null)
@@ -151,9 +345,21 @@ export default function MapView({
   const navigatingRef = useRef(navigating)
   const deviceHeadingRef = useRef<number | null>(null)
   const currentHeadingRef = useRef(0)
+  const baseHeadingRef = useRef(0)
+  const manualRotationRef = useRef(0)
+  const rotateGestureRef = useRef<{ pointers: Map<number, { x: number; y: number }>; lastAngle: number | null }>({
+    pointers: new Map(),
+    lastAngle: null,
+  })
   const hazardsLayer = useRef<L.LayerGroup | null>(null)
   const pendingLayer = useRef<L.LayerGroup | null>(null)
   const routeHazardLayer = useRef<L.LayerGroup | null>(null)
+  const cyclingLayers = useRef<Record<FeatureLayer, L.LayerGroup> | null>(null)
+  const osmLayerRefs = useRef<Map<FeatureLayer, L.GeoJSON>>(new Map())
+  const routeContextRef = useRef<RouteMapContext | null>(null)
+  const amenityMarkersRef = useRef<L.LayerGroup | null>(null)
+  const renderRouteFeaturesRef = useRef<() => void>(() => {})
+  const activeOverlays = useRef<Set<FeatureLayer>>(new Set(['parks', 'pedestrian', 'canals', 'livingStreets']))
   const hazardLinesRef = useRef<Map<string, L.Polyline>>(new Map())
   const dragStateRef = useRef<{ active: boolean; lastX: number; lastY: number; pointerId: number | null }>({
     active: false,
@@ -162,23 +368,107 @@ export default function MapView({
     pointerId: null,
   })
   const [showRecenter, setShowRecenter] = useState(false)
+  const [showCompass, setShowCompass] = useState(false)
 
   useEffect(() => { navigatingRef.current = navigating }, [navigating])
+
+  const typeFor: Record<FeatureLayer, 'park' | 'pedestrian' | 'living-street' | 'canal'> = {
+    parks: 'park',
+    pedestrian: 'pedestrian',
+    livingStreets: 'living-street',
+    canals: 'canal',
+  }
+
+  function clearRouteFeatures() {
+    const map = mapRef.current
+    const cycling = cyclingLayers.current
+    if (!map || !cycling) return
+    for (const layer of ROUTE_LAYERS) {
+      osmLayerRefs.current.get(layer)?.remove()
+      osmLayerRefs.current.delete(layer)
+      cycling[layer].clearLayers()
+      if (map.hasLayer(cycling[layer])) map.removeLayer(cycling[layer])
+    }
+    routeContextRef.current = null
+    selectedOverlayRef.current = null
+  }
+
+  function renderRouteFeatures() {
+    const map = mapRef.current
+    const cycling = cyclingLayers.current
+    const ctx = routeContextRef.current
+    if (!map || !cycling || !ctx) return
+
+    for (const layer of ROUTE_LAYERS) {
+      osmLayerRefs.current.get(layer)?.remove()
+      osmLayerRefs.current.delete(layer)
+      cycling[layer].clearLayers()
+
+      if (!activeOverlays.current.has(layer)) {
+        if (map.hasLayer(cycling[layer])) map.removeLayer(cycling[layer])
+        continue
+      }
+
+      const data = ctx.layers[layer]
+      if (!data?.features.length) {
+        if (map.hasLayer(cycling[layer])) map.removeLayer(cycling[layer])
+        continue
+      }
+
+      const geoLayer = L.geoJSON(data as GeoJSON.FeatureCollection, {
+        style: geoJsonStyle(typeFor[layer]),
+        onEachFeature: (feature, l) => {
+          const label = streetLabel((feature.properties ?? {}) as Record<string, unknown>)
+          l.bindTooltip(areaTooltip(label), { sticky: true })
+          bindOverlayInteractions(l as TaggedPath, typeFor[layer], feature, selectedOverlayRef, routeLineRef)
+        },
+      })
+      geoLayer.addTo(cycling[layer])
+      osmLayerRefs.current.set(layer, geoLayer)
+      if (!map.hasLayer(cycling[layer])) cycling[layer].addTo(map)
+    }
+    routeLineRef.current?.bringToFront()
+  }
+
+  renderRouteFeaturesRef.current = renderRouteFeatures
+
+  // Apply the combined rotation — the satnav compass heading plus any manual
+  // two-finger twist the rider has applied on top — to the rotor, the position
+  // arrow, and any open tooltips.
+  function applyRotation() {
+    const total = baseHeadingRef.current + manualRotationRef.current
+    currentHeadingRef.current = total
+    const arrow = navMarker.current?.getElement()?.querySelector<HTMLElement>('.nav-pos-arrow')
+    // The lucide "navigation" glyph points north-east by default, so offset by -45deg.
+    if (arrow) arrow.style.transform = `rotate(${baseHeadingRef.current - 45}deg)`
+    if (rotorRef.current) rotorRef.current.style.transform = `rotate(${-total}deg)`
+
+    const container = mapRef.current?.getContainer()
+    if (container) {
+      const rotor = rotorRef.current
+      const rotorTransition = rotor ? getComputedStyle(rotor).transitionDuration : '0s'
+      const tooltipTransition =
+        rotorTransition !== '0s' && rotorTransition !== '' ? 'rotate .35s ease-out' : ''
+      syncAllTooltipsUpright(container, total, tooltipTransition)
+    }
+  }
 
   // Point the position arrow in the given compass direction, and rotate the
   // whole map so that direction faces "up" the screen — a track-up satnav view.
   function applyHeading(heading: number) {
-    currentHeadingRef.current = heading
-    const arrow = navMarker.current?.getElement()?.querySelector<HTMLElement>('.nav-pos-arrow')
-    // The lucide "navigation" glyph points north-east by default, so offset by -45deg.
-    if (arrow) arrow.style.transform = `rotate(${heading - 45}deg)`
-    if (rotorRef.current) rotorRef.current.style.transform = `rotate(${-heading}deg)`
+    baseHeadingRef.current = heading
+    applyRotation()
+  }
 
-    // Counter-rotate any open tooltip labels so their text stays upright
-    // inside the rotated track-up container.
-    mapRef.current?.getContainer()
-      .querySelectorAll<HTMLElement>('.leaflet-tooltip .tt-label')
-      .forEach((el) => { el.style.transform = `rotate(${heading}deg)` })
+  // Snap a manual two-finger rotation back to north-up.
+  function resetRotation() {
+    if (rotorRef.current) rotorRef.current.style.transition = 'transform .35s ease-out'
+    manualRotationRef.current = 0
+    applyRotation()
+    setShowCompass(false)
+    setTimeout(() => {
+      if (rotorRef.current) rotorRef.current.style.transition = ''
+    }, 400)
   }
 
   // While navigating, point the position arrow — and the map itself — at the
@@ -212,7 +502,13 @@ export default function MapView({
       LONDON_CENTER,
       12,
     )
-    L.control.zoom({ position: 'bottomright' }).addTo(map)
+    L.control.zoom({
+      position: 'bottomright',
+      zoomInText: '+',
+      zoomOutText: '−',
+      zoomInTitle: 'Zoom in',
+      zoomOutTitle: 'Zoom out',
+    }).addTo(map)
 
     // Clean, light basemap (CARTO Positron) — keyless, open, and easy to read at a glance.
     const light = L.tileLayer(
@@ -238,23 +534,32 @@ export default function MapView({
       DANGER_ZONES.map((z) =>
         L.circle([z.lat, z.lon], {
           radius: z.radiusM,
-          color: '#ef4444',
-          weight: 1.5,
-          fillColor: '#ef4444',
-          fillOpacity: 0.22,
+          ...DANGER_ZONE_STYLE,
         }).bindTooltip(`<span class="tt-label">${z.name} — ${z.note}</span>`, { sticky: true }),
       ),
     ).addTo(map)
+
+    // Route-context overlays — populated only after a route is planned.
+    const cycling = buildCyclingAreaLayers()
+    cyclingLayers.current = cycling
 
     // Rider-reported unsafe stretches, and the in-progress pending report.
     hazardsLayer.current = L.layerGroup().addTo(map)
     pendingLayer.current = L.layerGroup().addTo(map)
     routeHazardLayer.current = L.layerGroup().addTo(map)
+    amenityMarkersRef.current = L.layerGroup().addTo(map)
 
     const layersControl = L.control
       .layers(
         { Light: light, 'Cycle network': cycle },
-        { 'Danger zones': dangerZones, 'Unsafe roads (reported)': hazardsLayer.current },
+        {
+          'Parks & green spaces': cycling.parks,
+          'Pedestrian & car-free': cycling.pedestrian,
+          'Low-traffic neighbourhoods': cycling.livingStreets,
+          'Canals & towpaths': cycling.canals,
+          'Danger zones': dangerZones,
+          'Unsafe roads (reported)': hazardsLayer.current,
+        },
         { position: 'topright', collapsed: true },
       )
       .addTo(map)
@@ -275,16 +580,47 @@ export default function MapView({
       }
     })
 
-    // Tooltips live inside the rotated track-up container, so newly opened
-    // ones need their label counter-rotated to stay upright immediately.
-    map.on('tooltipopen', (e) => {
-      e.tooltip
-        .getElement()
-        ?.querySelectorAll<HTMLElement>('.tt-label')
-        .forEach((el) => { el.style.transform = `rotate(${currentHeadingRef.current}deg)` })
-    })
+    // Tooltips live inside the rotated track-up container — counter-rotate the
+    // whole tooltip box (not just the label) so it stays upright on open.
+    function onTooltipOpen(e: L.LeafletEvent) {
+      const el = (e as L.TooltipEvent).tooltip.getElement()
+      if (el) setTooltipUpright(el, currentHeadingRef.current)
+    }
+    map.on('tooltipopen', onTooltipOpen)
+
+    function onOverlayAdd(e: L.LayersControlEvent) {
+      const key = OVERLAY_KEYS[e.name]
+      if (key) {
+        activeOverlays.current.add(key)
+        renderRouteFeaturesRef.current()
+      }
+    }
+    function onOverlayRemove(e: L.LayersControlEvent) {
+      const key = OVERLAY_KEYS[e.name]
+      if (key) {
+        activeOverlays.current.delete(key)
+        renderRouteFeaturesRef.current()
+      }
+    }
+    map.on('overlayadd', onOverlayAdd)
+    map.on('overlayremove', onOverlayRemove)
+
+    function onMapClick() {
+      if (!selectedOverlayRef.current) return
+      const prev = selectedOverlayRef.current as TaggedPath
+      if (prev._overlayType) prev.setStyle(overlayStyle(prev._overlayType, 'muted'))
+      selectedOverlayRef.current = null
+    }
+    map.on('click', onMapClick)
 
     mapRef.current = map
+
+    return () => {
+      map.off('overlayadd', onOverlayAdd)
+      map.off('overlayremove', onOverlayRemove)
+      map.off('click', onMapClick)
+      map.off('tooltipopen', onTooltipOpen)
+    }
   }, [])
 
   // Start / end markers.
@@ -295,7 +631,7 @@ export default function MapView({
     startMarker.current?.remove()
     startMarker.current = null
     if (start) {
-      startMarker.current = L.marker([start.lat, start.lon], { icon: pinIcon('#16a34a') })
+      startMarker.current = L.marker([start.lat, start.lon], { icon: pinIcon('#1a1a1a') })
         .addTo(map)
         .bindTooltip(`<span class="tt-label">${start.short}</span>`, { direction: 'top', offset: [0, -28] })
     }
@@ -303,7 +639,7 @@ export default function MapView({
     endMarker.current?.remove()
     endMarker.current = null
     if (end) {
-      endMarker.current = L.marker([end.lat, end.lon], { icon: pinIcon('#ef4444') })
+      endMarker.current = L.marker([end.lat, end.lon], { icon: pinIcon('#888888') })
         .addTo(map)
         .bindTooltip(`<span class="tt-label">${end.short}</span>`, { direction: 'top', offset: [0, -28] })
     }
@@ -324,23 +660,79 @@ export default function MapView({
     if (!map) return
 
     routeLine.current?.remove()
+    routeUnderlay.current?.remove()
     progressLine.current?.remove()
     cyclist.current?.remove()
     routeLine.current = null
-    progressLine.current = null
-    cyclist.current = null
+    routeLineRef.current = null
+    routeUnderlay.current = null
+    selectedOverlayRef.current = null
     if (animRef.current) cancelAnimationFrame(animRef.current)
 
-    if (!route) return
-    routeLine.current = L.polyline(route.coordinates, {
-      color: '#16a34a',
-      weight: 5,
-      opacity: 0.9,
+    if (!route) {
+      clearRouteFeatures()
+      return
+    }
+
+    routeUnderlay.current = L.polyline(route.coordinates, {
+      color: '#ffffff',
+      weight: 9,
+      opacity: 0.92,
       lineJoin: 'round',
       lineCap: 'round',
     }).addTo(map)
+
+    routeLine.current = L.polyline(route.coordinates, {
+      color: '#1a1a1a',
+      weight: 5,
+      opacity: 1,
+      lineJoin: 'round',
+      lineCap: 'round',
+    }).addTo(map)
+    routeLineRef.current = routeLine.current
+    routeLine.current.bringToFront()
     map.fitBounds(routeLine.current.getBounds(), { padding: [70, 70] })
+
+    let cancelled = false
+    fetchRouteContext(route.coordinates).then((ctx) => {
+      if (cancelled) return
+      routeContextRef.current = ctx
+      renderRouteFeatures()
+    })
+
+    return () => { cancelled = true }
   }, [route])
+
+  // Cyclist amenities — parking at destination, pumps/shops/cafés on the route.
+  useEffect(() => {
+    const layer = amenityMarkersRef.current
+    if (!layer) return
+    layer.clearLayers()
+    for (const a of amenities) {
+      const note = [a.note, a.capacity ? `${a.capacity} spaces` : null].filter(Boolean).join(' · ')
+      const active = focusAmenity?.id === a.id
+      L.marker([a.lat, a.lon], {
+        icon: amenityMarkerIcon(a.kind, active),
+        zIndexOffset: active ? 800 : 400,
+        opacity: active ? 1 : 0.42,
+      })
+        .bindTooltip(`<span class="tt-label">${a.name}${note ? ` — ${note}` : ''}</span>`, { sticky: true })
+        .on('mouseover', (e) => { e.target.setOpacity(1) })
+        .on('mouseout', (e) => { if (focusAmenity?.id !== a.id) e.target.setOpacity(0.42) })
+        .on('click', (e) => {
+          L.DomEvent.stopPropagation(e)
+          e.target.setOpacity(1)
+          e.target.openTooltip()
+        })
+        .addTo(layer)
+    }
+  }, [amenities, focusAmenity])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !focusAmenity) return
+    map.setView([focusAmenity.lat, focusAmenity.lon], Math.max(map.getZoom(), 16), { animate: true })
+  }, [focusAmenity])
 
   // Trace the route: a cyclist rides from A to B while a brighter line follows.
   useEffect(() => {
@@ -358,11 +750,22 @@ export default function MapView({
     const total = cum[cum.length - 1]
 
     progressLine.current = L.polyline([pts[0]], {
-      color: '#f59e0b',
+      color: '#737373',
       weight: 6,
       opacity: 0.95,
     }).addTo(map)
     cyclist.current = L.marker(pts[0], { icon: cyclistIcon, zIndexOffset: 1000 }).addTo(map)
+
+    // The progress line is redrawn via setLatLngs() on every animation frame
+    // rather than Leaflet's own pan/zoom hooks, so a zoom that lands between
+    // two frames can leave it projected for the old scale — force a
+    // reprojection once the zoom settles.
+    function syncToZoom() {
+      progressLine.current?.redraw()
+      const at = cyclist.current?.getLatLng()
+      if (at) cyclist.current?.setLatLng(at)
+    }
+    map.on('zoomend', syncToZoom)
 
     const duration = Math.min(14000, Math.max(6000, total * 1.2)) // ms, scales with distance
     const startTs = performance.now()
@@ -391,6 +794,7 @@ export default function MapView({
 
     return () => {
       if (animRef.current) cancelAnimationFrame(animRef.current)
+      map.off('zoomend', syncToZoom)
     }
   }, [traceToken, route])
 
@@ -404,7 +808,10 @@ export default function MapView({
       navMarker.current = null
       followRef.current = true
       setShowRecenter(false)
-      if (rotorRef.current) rotorRef.current.style.transform = 'rotate(0deg)'
+      // Leaving nav drops the compass-driven heading, but keep any manual
+      // rotation the rider applied — they can reset it via the compass button.
+      baseHeadingRef.current = 0
+      applyRotation()
 
       // Leaving track-up mode shrinks the map container back down — restore
       // the view so the same spot stays centred.
@@ -460,13 +867,7 @@ export default function MapView({
       if (line) {
         line.setPopupContent(content)
       } else {
-        line = L.polyline(h.points, {
-          color: '#ef4444',
-          weight: 6,
-          opacity: 0.85,
-          dashArray: '2 10',
-          lineCap: 'round',
-        }).addTo(layer)
+        line = L.polyline(h.points, HAZARD_LINE_STYLE).addTo(layer)
         line.bindPopup(content)
         existing.set(h.id, line)
       }
@@ -507,17 +908,11 @@ export default function MapView({
     if (!layer) return
     layer.clearLayers()
     for (const [lat, lon] of pendingPoints) {
-      L.circleMarker([lat, lon], {
-        radius: 7,
-        color: '#ef4444',
-        weight: 2,
-        fillColor: '#ef4444',
-        fillOpacity: 0.9,
-      }).addTo(layer)
+      L.circleMarker([lat, lon], HAZARD_POINT_STYLE).addTo(layer)
     }
     if (pendingPoints.length === 2) {
       const path = pendingPath && pendingPath.length >= 2 ? pendingPath : pendingPoints
-      L.polyline(path, { color: '#ef4444', weight: 5, dashArray: '6 8', lineCap: 'round' }).addTo(layer)
+      L.polyline(path, HAZARD_PENDING_LINE_STYLE).addTo(layer)
     }
   }, [pendingPoints, pendingPath])
 
@@ -602,6 +997,80 @@ export default function MapView({
     }
   }, [])
 
+  // Two-finger rotate: twisting two fingers spins the map clockwise or
+  // anticlockwise, like turning a paper map on a table. Works in both the
+  // planning view and track-up navigation, layering on top of (or in place
+  // of) the compass heading.
+  useEffect(() => {
+    const el = elRef.current
+    if (!el) return
+    const gesture = rotateGestureRef.current
+
+    function angleBetween(a: { x: number; y: number }, b: { x: number; y: number }) {
+      return (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI
+    }
+    function normalizeDelta(deg: number) {
+      return (((deg + 180) % 360) + 360) % 360 - 180
+    }
+
+    function onPointerDown(e: PointerEvent) {
+      gesture.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      if (gesture.pointers.size === 2) {
+        // A second finger landed — hand off from single-finger panning (if
+        // any) to two-finger rotation, and track live without CSS lag.
+        dragStateRef.current.active = false
+        gesture.lastAngle = null
+        if (rotorRef.current) rotorRef.current.style.transition = 'none'
+      }
+    }
+
+    function onPointerMove(e: PointerEvent) {
+      if (!gesture.pointers.has(e.pointerId)) return
+      gesture.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      if (gesture.pointers.size !== 2) return
+
+      const [p1, p2] = [...gesture.pointers.values()]
+      const a = angleBetween(p1, p2)
+      if (gesture.lastAngle != null) {
+        const delta = normalizeDelta(a - gesture.lastAngle)
+        manualRotationRef.current -= delta
+        applyRotation()
+        if (Math.abs(manualRotationRef.current) > 0.5) setShowCompass(true)
+      }
+      gesture.lastAngle = a
+    }
+
+    function onPointerUp(e: PointerEvent) {
+      gesture.pointers.delete(e.pointerId)
+      if (gesture.pointers.size < 2) gesture.lastAngle = null
+      if (gesture.pointers.size === 0 && rotorRef.current) rotorRef.current.style.transition = ''
+    }
+
+    el.addEventListener('pointerdown', onPointerDown)
+    el.addEventListener('pointermove', onPointerMove)
+    el.addEventListener('pointerup', onPointerUp)
+    el.addEventListener('pointercancel', onPointerUp)
+    return () => {
+      el.removeEventListener('pointerdown', onPointerDown)
+      el.removeEventListener('pointermove', onPointerMove)
+      el.removeEventListener('pointerup', onPointerUp)
+      el.removeEventListener('pointercancel', onPointerUp)
+    }
+  }, [])
+
+  // A manual rotation needs the same oversized, centred rotor that track-up
+  // navigation uses so spinning the map doesn't expose blank corners.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !showCompass || navigatingRef.current) return
+    const center = map.getCenter()
+    const zoom = map.getZoom()
+    requestAnimationFrame(() => {
+      map.invalidateSize()
+      map.setView(center, zoom, { animate: false })
+    })
+  }, [showCompass])
+
   function recenter() {
     const map = mapRef.current
     if (!map || !navMarker.current) return
@@ -613,7 +1082,10 @@ export default function MapView({
   return (
     <>
       <div className="map">
-        <div ref={rotorRef} className={`map-rotor ${navigating ? 'map-rotor--tracking' : ''}`}>
+        <div
+          ref={rotorRef}
+          className={`map-rotor ${navigating ? 'map-rotor--tracking' : ''} ${showCompass ? 'map-rotor--expanded' : ''}`}
+        >
           <div ref={elRef} className="map-inner" />
         </div>
       </div>
@@ -625,6 +1097,16 @@ export default function MapView({
           title="Recenter"
         >
           <LocateFixed size={20} />
+        </button>
+      )}
+      {showCompass && (
+        <button
+          className="compass-btn"
+          onClick={resetRotation}
+          aria-label="Reset map rotation to north-up"
+          title="Reset rotation"
+        >
+          <Compass size={20} />
         </button>
       )}
     </>

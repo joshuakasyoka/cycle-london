@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { LocateFixed, X } from 'lucide-react'
+import { ArrowUpDown, LocateFixed, X } from 'lucide-react'
 import { searchPlaces, type Place } from '../services/geocode'
 
 interface Props {
@@ -9,9 +9,10 @@ interface Props {
   onChange: (place: Place | null) => void
   onLocate?: () => void
   locating?: boolean
+  onSwap?: () => void
 }
 
-export default function LocationInput({ icon, placeholder, value, onChange, onLocate, locating }: Props) {
+export default function LocationInput({ icon, placeholder, value, onChange, onLocate, locating, onSwap }: Props) {
   const [text, setText] = useState('')
   const [results, setResults] = useState<Place[]>([])
   const [open, setOpen] = useState(false)
@@ -27,7 +28,7 @@ export default function LocationInput({ icon, placeholder, value, onChange, onLo
   useEffect(() => {
     if (value && text === value.short) return
     const q = text.trim()
-    if (q.length < 3) {
+    if (q.length < 2) {
       setResults([])
       return
     }
@@ -71,7 +72,7 @@ export default function LocationInput({ icon, placeholder, value, onChange, onLo
         {icon}
       </span>
       <input
-        className="loc-input"
+        className={`loc-input${onSwap ? ' loc-input--swap' : ''}${onSwap && text ? ' loc-input--swap-clear' : ''}`}
         placeholder={placeholder}
         value={text}
         onChange={(e) => {
@@ -95,13 +96,24 @@ export default function LocationInput({ icon, placeholder, value, onChange, onLo
       )}
       {!text && onLocate && (
         <button
-          className={`loc-locate ${locating ? 'loc-locate--busy' : ''}`}
+          className={`loc-action loc-locate ${locating ? 'loc-locate--busy' : ''}`}
           aria-label="Use current location"
           title="Use current location"
           disabled={locating}
           onClick={onLocate}
         >
           <LocateFixed size={15} />
+        </button>
+      )}
+      {onSwap && (
+        <button
+          className={`loc-action loc-swap${text ? ' loc-swap--with-clear' : ''}`}
+          type="button"
+          aria-label="Swap start and destination"
+          title="Swap start and destination"
+          onClick={onSwap}
+        >
+          <ArrowUpDown size={15} />
         </button>
       )}
       {open && (results.length > 0 || loading) && (

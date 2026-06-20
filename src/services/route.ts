@@ -14,7 +14,19 @@ export interface RouteResult {
 }
 
 export async function fetchRoute(start: Place, end: Place): Promise<RouteResult> {
-  const lonlats = `${start.lon},${start.lat}|${end.lon},${end.lat}`
+  return fetchRouteLonLats(`${start.lon},${start.lat}|${end.lon},${end.lat}`)
+}
+
+/** Recalculate from the rider's current position to the same destination. */
+export async function fetchRouteFromPosition(
+  lat: number,
+  lon: number,
+  end: Place,
+): Promise<RouteResult> {
+  return fetchRouteLonLats(`${lon},${lat}|${end.lon},${end.lat}`)
+}
+
+async function fetchRouteLonLats(lonlats: string): Promise<RouteResult> {
   const url = new URL('https://brouter.de/brouter')
   url.searchParams.set('lonlats', lonlats)
   url.searchParams.set('profile', PROFILE)
