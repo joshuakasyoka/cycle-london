@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
-import { Compass, LocateFixed } from 'lucide-react'
+import { LocateFixed } from 'lucide-react'
 import { DANGER_ZONES } from '../data/dangerZones'
 import type { Place } from '../services/geocode'
 import {
@@ -531,17 +531,6 @@ export default function MapView({
     applyRotation()
   }
 
-  // Snap a manual two-finger rotation back to north-up.
-  function resetRotation() {
-    if (rotorRef.current) rotorRef.current.style.transition = 'transform .35s ease-out'
-    manualRotationRef.current = 0
-    applyRotation()
-    setShowCompass(false)
-    setTimeout(() => {
-      if (rotorRef.current) rotorRef.current.style.transition = ''
-    }, 400)
-  }
-
   // While navigating, point the position arrow — and the map itself — at the
   // compass heading of the phone (i.e. the direction it's physically facing)
   // rather than the route's travel direction.
@@ -895,7 +884,7 @@ export default function MapView({
       followRef.current = true
       setShowRecenter(false)
       // Leaving nav drops the compass-driven heading, but keep any manual
-      // rotation the rider applied — they can reset it via the compass button.
+      // rotation the rider applied.
       baseHeadingRef.current = 0
       applyRotation()
 
@@ -1216,16 +1205,6 @@ export default function MapView({
           title="Recenter"
         >
           <LocateFixed size={20} />
-        </button>
-      )}
-      {showCompass && (
-        <button
-          className="compass-btn"
-          onClick={resetRotation}
-          aria-label="Reset map rotation to north-up"
-          title="Reset rotation"
-        >
-          <Compass size={20} />
         </button>
       )}
     </>
