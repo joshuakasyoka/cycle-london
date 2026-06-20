@@ -6,9 +6,9 @@ import type { CapacitorConfig } from '@capacitor/cli'
 // After running `npm run ios:add`, open ios/App/App/Info.plist and add:
 //
 //   <key>NSLocationWhenInUseUsageDescription</key>
-//   <string>Cycle London uses your location to navigate the bike route.</string>
+//   <string>Safe Cycles uses your location to navigate the bike route.</string>
 //   <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-//   <string>Cycle London can keep tracking your position while you ride, even with the screen locked.</string>
+//   <string>Safe Cycles can keep tracking your position while you ride, even with the screen locked.</string>
 //
 // For background location (screen-off turn alerts), add the "Location updates"
 // Background Mode in Xcode: Target → Signing & Capabilities → + Background Modes.
@@ -20,7 +20,7 @@ import type { CapacitorConfig } from '@capacitor/cli'
 //   npm run ios:open     → open in Xcode, then Run or Archive
 const config: CapacitorConfig = {
   appId: 'com.cyclelondon.app',
-  appName: 'Cycle London',
+  appName: 'Safe Cycles',
   webDir: 'dist',
   ios: {
     contentInset: 'always',

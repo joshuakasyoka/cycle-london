@@ -142,30 +142,32 @@ function areaTooltip(name: string, note?: string) {
   return `<span class="tt-label">${name}${note ? ` — ${note}` : ''}</span>`
 }
 
-function tooltipAnchorOrigin(el: HTMLElement): string {
-  if (el.classList.contains('leaflet-tooltip-top')) return 'bottom center'
-  if (el.classList.contains('leaflet-tooltip-bottom')) return 'top center'
-  if (el.classList.contains('leaflet-tooltip-left')) return 'center right'
-  if (el.classList.contains('leaflet-tooltip-right')) return 'center left'
+function overlayAnchorOrigin(el: HTMLElement): string {
+  if (el.classList.contains('leaflet-tooltip-top') || el.classList.contains('leaflet-popup-top')) return 'bottom center'
+  if (el.classList.contains('leaflet-tooltip-bottom') || el.classList.contains('leaflet-popup-bottom')) return 'top center'
+  if (el.classList.contains('leaflet-tooltip-left') || el.classList.contains('leaflet-popup-left')) return 'center right'
+  if (el.classList.contains('leaflet-tooltip-right') || el.classList.contains('leaflet-popup-right')) return 'center left'
+  // Popups usually open above the tap point with the tip at the bottom edge.
+  if (el.classList.contains('leaflet-popup')) return 'bottom center'
   return 'center center'
 }
 
-/** Keep tooltip boxes readable when the map rotor is spun (track-up or manual twist). */
-function setTooltipUpright(el: HTMLElement, degrees: number) {
+/** Keep tooltip/popup boxes readable when the map rotor is spun (track-up or manual twist). */
+function setOverlayUpright(el: HTMLElement, degrees: number) {
   if (!degrees) {
     el.style.rotate = ''
     el.style.transformOrigin = ''
     el.style.transition = ''
     return
   }
-  el.style.transformOrigin = tooltipAnchorOrigin(el)
+  el.style.transformOrigin = overlayAnchorOrigin(el)
   el.style.rotate = `${degrees}deg`
 }
 
-function syncAllTooltipsUpright(container: HTMLElement, degrees: number, transition = '') {
-  container.querySelectorAll<HTMLElement>('.leaflet-tooltip').forEach((el) => {
+function syncAllOverlaysUpright(container: HTMLElement, degrees: number, transition = '') {
+  container.querySelectorAll<HTMLElement>('.leaflet-tooltip, .leaflet-popup').forEach((el) => {
     el.style.transition = transition
-    setTooltipUpright(el, degrees)
+    setOverlayUpright(el, degrees)
   })
 }
 
@@ -347,9 +349,14 @@ export default function MapView({
   const currentHeadingRef = useRef(0)
   const baseHeadingRef = useRef(0)
   const manualRotationRef = useRef(0)
-  const rotateGestureRef = useRef<{ pointers: Map<number, { x: number; y: number }>; lastAngle: number | null }>({
+  const rotateGestureRef = useRef<{
+    pointers: Map<number, { x: number; y: number }>
+    lastAngle: number | null
+    lastSpan: number | null
+  }>({
     pointers: new Map(),
     lastAngle: null,
+    lastSpan: null,
   })
   const hazardsLayer = useRef<L.LayerGroup | null>(null)
   const pendingLayer = useRef<L.LayerGroup | null>(null)
@@ -432,9 +439,23 @@ export default function MapView({
 
   renderRouteFeaturesRef.current = renderRouteFeatures
 
+  function syncRouteVectors() {
+    routeLine.current?.redraw()
+    routeUnderlay.current?.redraw()
+    progressLine.current?.redraw()
+    routeLineRef.current?.bringToFront()
+    for (const geo of osmLayerRefs.current.values()) {
+      geo.eachLayer((layer) => {
+        if ('redraw' in layer && typeof (layer as L.Path).redraw === 'function') {
+          (layer as L.Path).redraw()
+        }
+      })
+    }
+  }
+
   // Apply the combined rotation — the satnav compass heading plus any manual
   // two-finger twist the rider has applied on top — to the rotor, the position
-  // arrow, and any open tooltips.
+  // arrow, and any open tooltips/popups.
   function applyRotation() {
     const total = baseHeadingRef.current + manualRotationRef.current
     currentHeadingRef.current = total
@@ -447,9 +468,9 @@ export default function MapView({
     if (container) {
       const rotor = rotorRef.current
       const rotorTransition = rotor ? getComputedStyle(rotor).transitionDuration : '0s'
-      const tooltipTransition =
+      const overlayTransition =
         rotorTransition !== '0s' && rotorTransition !== '' ? 'rotate .35s ease-out' : ''
-      syncAllTooltipsUpright(container, total, tooltipTransition)
+      syncAllOverlaysUpright(container, total, overlayTransition)
     }
   }
 
@@ -580,13 +601,18 @@ export default function MapView({
       }
     })
 
-    // Tooltips live inside the rotated track-up container — counter-rotate the
-    // whole tooltip box (not just the label) so it stays upright on open.
+    // Tooltips and popups live inside the rotated track-up container — counter-
+    // rotate the whole box so it stays upright on open.
     function onTooltipOpen(e: L.LeafletEvent) {
       const el = (e as L.TooltipEvent).tooltip.getElement()
-      if (el) setTooltipUpright(el, currentHeadingRef.current)
+      if (el) setOverlayUpright(el, currentHeadingRef.current)
+    }
+    function onPopupOpen(e: L.LeafletEvent) {
+      const el = (e as L.PopupEvent).popup.getElement()
+      if (el) setOverlayUpright(el, currentHeadingRef.current)
     }
     map.on('tooltipopen', onTooltipOpen)
+    map.on('popupopen', onPopupOpen)
 
     function onOverlayAdd(e: L.LayersControlEvent) {
       const key = OVERLAY_KEYS[e.name]
@@ -613,6 +639,11 @@ export default function MapView({
     }
     map.on('click', onMapClick)
 
+    function onZoomEnd() {
+      syncRouteVectors()
+    }
+    map.on('zoomend', onZoomEnd)
+
     mapRef.current = map
 
     return () => {
@@ -620,6 +651,8 @@ export default function MapView({
       map.off('overlayremove', onOverlayRemove)
       map.off('click', onMapClick)
       map.off('tooltipopen', onTooltipOpen)
+      map.off('popupopen', onPopupOpen)
+      map.off('zoomend', onZoomEnd)
     }
   }, [])
 
@@ -680,6 +713,7 @@ export default function MapView({
       opacity: 0.92,
       lineJoin: 'round',
       lineCap: 'round',
+      smoothFactor: 0,
     }).addTo(map)
 
     routeLine.current = L.polyline(route.coordinates, {
@@ -688,6 +722,7 @@ export default function MapView({
       opacity: 1,
       lineJoin: 'round',
       lineCap: 'round',
+      smoothFactor: 0,
     }).addTo(map)
     routeLineRef.current = routeLine.current
     routeLine.current.bringToFront()
@@ -1009,6 +1044,9 @@ export default function MapView({
     function angleBetween(a: { x: number; y: number }, b: { x: number; y: number }) {
       return (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI
     }
+    function spanBetween(a: { x: number; y: number }, b: { x: number; y: number }) {
+      return Math.hypot(b.x - a.x, b.y - a.y)
+    }
     function normalizeDelta(deg: number) {
       return (((deg + 180) % 360) + 360) % 360 - 180
     }
@@ -1020,6 +1058,7 @@ export default function MapView({
         // any) to two-finger rotation, and track live without CSS lag.
         dragStateRef.current.active = false
         gesture.lastAngle = null
+        gesture.lastSpan = null
         if (rotorRef.current) rotorRef.current.style.transition = 'none'
       }
     }
@@ -1030,19 +1069,37 @@ export default function MapView({
       if (gesture.pointers.size !== 2) return
 
       const [p1, p2] = [...gesture.pointers.values()]
+      const span = spanBetween(p1, p2)
       const a = angleBetween(p1, p2)
+
+      // Pinch-to-zoom also uses two fingers — ignore rotation while span changes.
+      if (gesture.lastSpan != null) {
+        const spanDelta = Math.abs(span - gesture.lastSpan) / gesture.lastSpan
+        if (spanDelta > 0.035) {
+          gesture.lastAngle = a
+          gesture.lastSpan = span
+          return
+        }
+      }
+
       if (gesture.lastAngle != null) {
         const delta = normalizeDelta(a - gesture.lastAngle)
-        manualRotationRef.current -= delta
-        applyRotation()
-        if (Math.abs(manualRotationRef.current) > 0.5) setShowCompass(true)
+        if (Math.abs(delta) > 0.35) {
+          manualRotationRef.current -= delta
+          applyRotation()
+          if (Math.abs(manualRotationRef.current) > 0.5) setShowCompass(true)
+        }
       }
       gesture.lastAngle = a
+      gesture.lastSpan = span
     }
 
     function onPointerUp(e: PointerEvent) {
       gesture.pointers.delete(e.pointerId)
-      if (gesture.pointers.size < 2) gesture.lastAngle = null
+      if (gesture.pointers.size < 2) {
+        gesture.lastAngle = null
+        gesture.lastSpan = null
+      }
       if (gesture.pointers.size === 0 && rotorRef.current) rotorRef.current.style.transition = ''
     }
 
@@ -1068,6 +1125,7 @@ export default function MapView({
     requestAnimationFrame(() => {
       map.invalidateSize()
       map.setView(center, zoom, { animate: false })
+      syncRouteVectors()
     })
   }, [showCompass])
 

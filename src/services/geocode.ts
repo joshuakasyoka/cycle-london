@@ -13,7 +13,7 @@ const LONDON_CENTER = { lat: 51.5074, lon: -0.1278 }
 const SEARCH_LIMIT = 12
 const NOMINATIM_HEADERS = {
   Accept: 'application/json',
-  'User-Agent': 'CycleLondon/1.0 (bike routing app)',
+  'User-Agent': 'SafeCycles/1.0 (bike routing app)',
 }
 
 interface ParsedQuery {

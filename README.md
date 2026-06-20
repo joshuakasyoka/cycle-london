@@ -1,4 +1,4 @@
-# 🚲 Cycle London
+# 🚲 Safe Cycles
 
 A bike-friendly route planner for London. Type a start and destination, choose how
 calm or quick you want the ride to be, and the app draws the safest cycle route on

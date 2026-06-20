@@ -9,6 +9,7 @@ import { fetchRoute, fetchRouteFromPosition, snapToRoad, type RouteResult } from
 import { fetchRouteAmenities, amenityKindLabel, type Amenity, type RouteAmenities } from './services/amenities'
 import { quietRouteShare, setQuietStreetLines } from './services/lowTrafficRoutes'
 import { fetchRouteContext } from './services/mapFeatures'
+import { bindFemaleVoice, pickFemaleVoice } from './services/voice'
 import {
   buildNavRoute,
   formatDistance,
@@ -74,7 +75,9 @@ export default function App() {
   const rerouteInFlightRef = useRef(false)
   const lastRerouteAtRef = useRef(0)
   const offRouteSinceRef = useRef<number | null>(null)
-  const sheetScrollRef = useRef<HTMLDivElement>(null)
+  const peekTouchYRef = useRef(0)
+
+  const voiceRef = useRef<SpeechSynthesisVoice | null>(null)
 
   useEffect(() => { endRef.current = end }, [end])
 
@@ -83,52 +86,62 @@ export default function App() {
   // Keep hazardsRef in sync so callbacks don't close over stale state
   useEffect(() => { hazardsRef.current = hazards }, [hazards])
 
-  // Peek mode: keep the route summary bar pinned at the bottom of the scroll area.
-  useEffect(() => {
-    const el = sheetScrollRef.current
-    if (!el || !collapsed || !route) return
-    requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight - el.clientHeight
-    })
-  }, [collapsed, route])
-
-  function scrollSheetToPeek() {
-    const el = sheetScrollRef.current
-    if (!el) return
-    el.scrollTop = el.scrollHeight - el.clientHeight
+  function expandSheet() {
+    setCollapsed(false)
   }
 
-  function handleSheetScroll() {
-    const el = sheetScrollRef.current
-    if (!el || !route || !collapsed) return
-    const maxScroll = el.scrollHeight - el.clientHeight
-    if (maxScroll > 0 && el.scrollTop < maxScroll - 24) {
-      setCollapsed(false)
-    }
+  function collapseSheet() {
+    setCollapsed(true)
+    setShowHazardList(false)
   }
 
   function toggleSheet() {
     if (!route) return
-    if (collapsed) {
-      setCollapsed(false)
-      sheetScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
-    } else {
-      setCollapsed(true)
-      requestAnimationFrame(scrollSheetToPeek)
-    }
+    if (collapsed) expandSheet()
+    else collapseSheet()
+  }
+
+  function toggleHazardList() {
+    setShowHazardList((open) => {
+      if (open) return false
+      expandSheet()
+      return true
+    })
+  }
+
+  function handlePeekTouchStart(e: React.TouchEvent) {
+    peekTouchYRef.current = e.touches[0]?.clientY ?? 0
+  }
+
+  function handlePeekTouchEnd(e: React.TouchEvent) {
+    const endY = e.changedTouches[0]?.clientY ?? peekTouchYRef.current
+    if (peekTouchYRef.current - endY > 28) expandSheet()
   }
 
   // Load any hazards reported on this device
   useEffect(() => { listHazards().then(setHazards) }, [])
+
+  // Pick a female English voice once the browser exposes the voice list.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
+    function refreshVoice() {
+      voiceRef.current = pickFemaleVoice()
+    }
+    refreshVoice()
+    window.speechSynthesis.addEventListener('voiceschanged', refreshVoice)
+    return () => window.speechSynthesis.removeEventListener('voiceschanged', refreshVoice)
+  }, [])
 
   // ── Voice ──────────────────────────────────────────────────────────────────
   const speak = useCallback((text: string) => {
     if (mutedRef.current) return
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
     try {
+      if (!voiceRef.current) voiceRef.current = pickFemaleVoice()
       window.speechSynthesis.cancel()
       const u = new SpeechSynthesisUtterance(text)
       u.rate = 1.05
+      bindFemaleVoice(u, voiceRef.current)
       window.speechSynthesis.speak(u)
     } catch { /* speech API unavailable */ }
   }, [])
@@ -557,21 +570,6 @@ export default function App() {
         </div>
       )}
 
-      {!navigating && !reporting && showHazardList && routeHazards.length > 0 && (
-        <div className="hazard-list">
-          <button className="hazard-list-close" onClick={() => setShowHazardList(false)} aria-label="Close">
-            <X size={16} />
-          </button>
-          <p>{routeHazards.length} unsafe stretch{routeHazards.length === 1 ? '' : 'es'} on this route</p>
-          {routeHazards.map((h, i) => (
-            <button key={h.id} className="hazard-list-item" onClick={() => previewHazard(h)}>
-              <span className="hazard-list-num">{i + 1}</span>
-              <span className="hazard-list-note">{h.note || 'Reported as unsafe by a rider'}</span>
-            </button>
-          ))}
-        </div>
-      )}
-
       {navigating && navView ? (
         <NavOverlay
           next={arrived ? nav!.maneuvers[nav!.maneuvers.length - 1] : navView.next}
@@ -594,14 +592,24 @@ export default function App() {
             onClick={toggleSheet}
             aria-label={collapsed && route ? 'Expand panel' : route ? 'Collapse panel' : 'Panel handle'}
           />
-          <div
-            className="sheet-scroll"
-            ref={sheetScrollRef}
-            onScroll={handleSheetScroll}
-          >
+          {collapsed && route ? (
+            <div
+              className="sheet-peek"
+              onTouchStart={handlePeekTouchStart}
+              onTouchEnd={handlePeekTouchEnd}
+            >
+              <RoutePeekBar
+                route={route}
+                routeHazards={routeHazards}
+                onStartRide={startRide}
+                onToggleHazardList={toggleHazardList}
+              />
+            </div>
+          ) : (
+            <div className="sheet-scroll">
             <div className="sheet-body">
               <header className="brand">
-                <h1>Cycle London</h1>
+                <h1>Safe Cycles</h1>
                 <p className="brand-sub">Open map routing · London</p>
               </header>
 
@@ -643,7 +651,7 @@ export default function App() {
                         <Play size={20} fill="currentColor" /> Start ride
                       </button>
                       {routeHazards.length > 0 && (
-                        <button className="hazard-flag" onClick={() => setShowHazardList((s) => !s)}>
+                        <button className="hazard-flag" onClick={toggleHazardList}>
                           <AlertTriangle size={14} /> {routeHazards.length}
                         </button>
                       )}
@@ -652,6 +660,13 @@ export default function App() {
                       <Eye size={14} /> Preview route
                     </button>
                   </div>
+                  {showHazardList && routeHazards.length > 0 && (
+                    <HazardListPanel
+                      routeHazards={routeHazards}
+                      onClose={() => setShowHazardList(false)}
+                      onPreview={previewHazard}
+                    />
+                  )}
                   {(amenities.parking.length > 0 || amenities.alongRoute.length > 0) && (
                     <div className="amenities">
                       {amenities.parking.length > 0 && (
@@ -704,34 +719,8 @@ export default function App() {
                 </div>
               )}
             </div>
-
-            {route && (
-              <div className="sheet-peek">
-                <div className="mini-route">
-                  <div className="mini-route-info">
-                    <span className="mini-route-stat">
-                      <span className="mini-route-num">{route.distanceKm.toFixed(1)}</span> km
-                    </span>
-                    <span className="mini-route-sep" aria-hidden>·</span>
-                    <span className="mini-route-stat">
-                      <span className="mini-route-num">{Math.round(route.durationMin)}</span> min
-                    </span>
-                    {routeHazards.length > 0 && (
-                      <button
-                        className="hazard-flag"
-                        onClick={() => setShowHazardList((s) => !s)}
-                      >
-                        <AlertTriangle size={13} /> {routeHazards.length}
-                      </button>
-                    )}
-                  </div>
-                  <button className="start-ride" onClick={startRide}>
-                    <Play size={20} fill="currentColor" /> Start ride
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
+          )}
         </div>
       )}
     </div>
@@ -743,6 +732,65 @@ function Stat({ value, label }: { value: string; label: string }) {
     <div className="stat">
       <span className="stat-label">{label}</span>
       <span className="stat-value">{value}</span>
+    </div>
+  )
+}
+
+function HazardListPanel({
+  routeHazards,
+  onClose,
+  onPreview,
+}: {
+  routeHazards: HazardSegment[]
+  onClose: () => void
+  onPreview: (h: HazardSegment) => void
+}) {
+  return (
+    <div className="hazard-list">
+      <button className="hazard-list-close" onClick={onClose} aria-label="Close">
+        <X size={16} />
+      </button>
+      <p>{routeHazards.length} unsafe stretch{routeHazards.length === 1 ? '' : 'es'} on this route</p>
+      {routeHazards.map((h, i) => (
+        <button key={h.id} className="hazard-list-item" onClick={() => onPreview(h)}>
+          <span className="hazard-list-num">{i + 1}</span>
+          <span className="hazard-list-note">{h.note || 'Reported as unsafe by a rider'}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function RoutePeekBar({
+  route,
+  routeHazards,
+  onStartRide,
+  onToggleHazardList,
+}: {
+  route: RouteResult
+  routeHazards: HazardSegment[]
+  onStartRide: () => void
+  onToggleHazardList: () => void
+}) {
+  return (
+    <div className="mini-route">
+      <div className="mini-route-info">
+        <span className="mini-route-stat">
+          <span className="mini-route-num">{route.distanceKm.toFixed(1)}</span> km
+        </span>
+        <span className="mini-route-sep" aria-hidden>·</span>
+        <span className="mini-route-stat">
+          <span className="mini-route-num">{Math.round(route.durationMin)}</span> min
+        </span>
+        {routeHazards.length > 0 && (
+          <button className="hazard-flag" onClick={onToggleHazardList}>
+            <AlertTriangle size={13} /> {routeHazards.length}
+          </button>
+        )}
+      </div>
+      <button className="start-ride start-ride--peek" onClick={onStartRide}>
+        <Play size={18} fill="currentColor" /> Start
+      </button>
     </div>
   )
 }
