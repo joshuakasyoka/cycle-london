@@ -12,6 +12,12 @@ import type { Amenity, AmenityKind } from '../services/amenities'
 import type { RouteResult } from '../services/route'
 import type { HazardSegment } from '../services/hazards'
 
+const TOOLTIP_MAX_WIDTH = 600
+
+function tooltipOpts(extra?: L.TooltipOptions): L.TooltipOptions {
+  return { maxWidth: TOOLTIP_MAX_WIDTH, ...extra } as L.TooltipOptions
+}
+
 export interface NavPosition {
   lat: number
   lng: number
@@ -50,20 +56,44 @@ const DANGER_ZONE_STYLE = {
   fillOpacity: 0.18,
 }
 
-const HAZARD_LINE_STYLE = {
-  color: HAZARD_COLOR,
-  weight: 5,
-  opacity: 0.55,
+const HAZARD_LINE_UNDERLAY_STYLE = {
+  color: '#ffffff',
+  weight: 10,
+  opacity: 1,
   dashArray: '2 10',
   lineCap: 'round' as const,
+  lineJoin: 'round' as const,
+  smoothFactor: 0,
+}
+
+const HAZARD_LINE_STYLE = {
+  color: HAZARD_COLOR,
+  weight: 6,
+  opacity: 1,
+  dashArray: '2 10',
+  lineCap: 'round' as const,
+  lineJoin: 'round' as const,
+  smoothFactor: 0,
+}
+
+const HAZARD_PENDING_UNDERLAY_STYLE = {
+  color: '#ffffff',
+  weight: 10,
+  opacity: 1,
+  dashArray: '6 8',
+  lineCap: 'round' as const,
+  lineJoin: 'round' as const,
+  smoothFactor: 0,
 }
 
 const HAZARD_PENDING_LINE_STYLE = {
   color: HAZARD_COLOR,
-  weight: 5,
-  opacity: 0.55,
+  weight: 6,
+  opacity: 1,
   dashArray: '6 8',
   lineCap: 'round' as const,
+  lineJoin: 'round' as const,
+  smoothFactor: 0,
 }
 
 const HAZARD_POINT_STYLE = {
@@ -282,12 +312,18 @@ function pinIcon(color: string) {
   })
 }
 
+const ALERT_TRIANGLE_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>'
+
 function hazardNumberIcon(n: number) {
+  const w = 34
+  const h = 26
+  const gap = 6
   return L.divIcon({
     className: 'hazard-number-wrap',
-    html: `<div class="hazard-number">${n}</div>`,
-    iconSize: [24, 24],
-    iconAnchor: [12, 12],
+    html: `<div class="hazard-number">${ALERT_TRIANGLE_SVG}<span>${n}</span></div>`,
+    iconSize: [w, h],
+    iconAnchor: [w / 2, h + gap],
   })
 }
 
@@ -368,6 +404,7 @@ export default function MapView({
   const renderRouteFeaturesRef = useRef<() => void>(() => {})
   const activeOverlays = useRef<Set<FeatureLayer>>(new Set(['parks', 'pedestrian', 'canals', 'livingStreets']))
   const hazardLinesRef = useRef<Map<string, L.Polyline>>(new Map())
+  const hazardUnderlaysRef = useRef<Map<string, L.Polyline>>(new Map())
   const dragStateRef = useRef<{ active: boolean; lastX: number; lastY: number; pointerId: number | null }>({
     active: false,
     lastX: 0,
@@ -426,7 +463,7 @@ export default function MapView({
         style: geoJsonStyle(typeFor[layer]),
         onEachFeature: (feature, l) => {
           const label = streetLabel((feature.properties ?? {}) as Record<string, unknown>)
-          l.bindTooltip(areaTooltip(label), { sticky: true })
+          l.bindTooltip(areaTooltip(label), tooltipOpts({ sticky: true }))
           bindOverlayInteractions(l as TaggedPath, typeFor[layer], feature, selectedOverlayRef, routeLineRef)
         },
       })
@@ -439,11 +476,24 @@ export default function MapView({
 
   renderRouteFeaturesRef.current = renderRouteFeatures
 
+  function bringHazardsAboveRoute() {
+    for (const underlay of hazardUnderlaysRef.current.values()) {
+      underlay.bringToFront()
+    }
+    for (const line of hazardLinesRef.current.values()) {
+      line.bringToFront()
+    }
+    routeHazardLayer.current?.eachLayer((l) => {
+      if (l instanceof L.Marker) l.setZIndexOffset(1000)
+    })
+  }
+
   function syncRouteVectors() {
     routeLine.current?.redraw()
     routeUnderlay.current?.redraw()
     progressLine.current?.redraw()
     routeLineRef.current?.bringToFront()
+    bringHazardsAboveRoute()
     for (const geo of osmLayerRefs.current.values()) {
       geo.eachLayer((layer) => {
         if ('redraw' in layer && typeof (layer as L.Path).redraw === 'function') {
@@ -556,7 +606,7 @@ export default function MapView({
         L.circle([z.lat, z.lon], {
           radius: z.radiusM,
           ...DANGER_ZONE_STYLE,
-        }).bindTooltip(`<span class="tt-label">${z.name} — ${z.note}</span>`, { sticky: true }),
+        }).bindTooltip(`<span class="tt-label">${z.name} — ${z.note}</span>`, tooltipOpts({ sticky: true })),
       ),
     ).addTo(map)
 
@@ -666,7 +716,7 @@ export default function MapView({
     if (start) {
       startMarker.current = L.marker([start.lat, start.lon], { icon: pinIcon('#1a1a1a') })
         .addTo(map)
-        .bindTooltip(`<span class="tt-label">${start.short}</span>`, { direction: 'top', offset: [0, -28] })
+        .bindTooltip(`<span class="tt-label">${start.short}</span>`, tooltipOpts({ direction: 'top', offset: [0, -28] }))
     }
 
     endMarker.current?.remove()
@@ -674,7 +724,7 @@ export default function MapView({
     if (end) {
       endMarker.current = L.marker([end.lat, end.lon], { icon: pinIcon('#888888') })
         .addTo(map)
-        .bindTooltip(`<span class="tt-label">${end.short}</span>`, { direction: 'top', offset: [0, -28] })
+        .bindTooltip(`<span class="tt-label">${end.short}</span>`, tooltipOpts({ direction: 'top', offset: [0, -28] }))
     }
 
     if (start && end && !route) {
@@ -726,6 +776,7 @@ export default function MapView({
     }).addTo(map)
     routeLineRef.current = routeLine.current
     routeLine.current.bringToFront()
+    bringHazardsAboveRoute()
     map.fitBounds(routeLine.current.getBounds(), { padding: [70, 70] })
 
     let cancelled = false
@@ -751,7 +802,7 @@ export default function MapView({
         zIndexOffset: active ? 800 : 400,
         opacity: active ? 1 : 0.42,
       })
-        .bindTooltip(`<span class="tt-label">${a.name}${note ? ` — ${note}` : ''}</span>`, { sticky: true })
+        .bindTooltip(`<span class="tt-label">${a.name}${note ? ` — ${note}` : ''}</span>`, tooltipOpts({ sticky: true }))
         .on('mouseover', (e) => { e.target.setOpacity(1) })
         .on('mouseout', (e) => { if (focusAmenity?.id !== a.id) e.target.setOpacity(0.42) })
         .on('click', (e) => {
@@ -893,6 +944,7 @@ export default function MapView({
     const layer = hazardsLayer.current
     if (!layer) return
     const existing = hazardLinesRef.current
+    const underlays = hazardUnderlaysRef.current
     const seen = new Set<string>()
 
     for (const h of hazards) {
@@ -902,18 +954,24 @@ export default function MapView({
       if (line) {
         line.setPopupContent(content)
       } else {
+        const underlay = L.polyline(h.points, HAZARD_LINE_UNDERLAY_STYLE).addTo(layer)
         line = L.polyline(h.points, HAZARD_LINE_STYLE).addTo(layer)
-        line.bindPopup(content)
+        line.bindPopup(content, { className: 'hazard-leaflet-popup', maxWidth: 240 })
+        underlays.set(h.id, underlay)
         existing.set(h.id, line)
       }
     }
 
     for (const [id, line] of existing) {
       if (!seen.has(id)) {
+        underlays.get(id)?.remove()
+        underlays.delete(id)
         line.remove()
         existing.delete(id)
       }
     }
+
+    bringHazardsAboveRoute()
   }, [hazards, onRemoveHazard, onVoteHazard])
 
   // While reporting, let the rider tap two points on the map to mark a stretch.
@@ -947,7 +1005,9 @@ export default function MapView({
     }
     if (pendingPoints.length === 2) {
       const path = pendingPath && pendingPath.length >= 2 ? pendingPath : pendingPoints
-      L.polyline(path, HAZARD_PENDING_LINE_STYLE).addTo(layer)
+      L.polyline(path, HAZARD_PENDING_UNDERLAY_STYLE).addTo(layer)
+      const line = L.polyline(path, HAZARD_PENDING_LINE_STYLE).addTo(layer)
+      line.bringToFront()
     }
   }, [pendingPoints, pendingPath])
 
@@ -961,6 +1021,7 @@ export default function MapView({
       const mid = h.points[Math.floor(h.points.length / 2)]
       L.marker(mid, { icon: hazardNumberIcon(i + 1), zIndexOffset: 900 }).addTo(layer)
     })
+    bringHazardsAboveRoute()
   }, [routeHazards])
 
   // Pan/zoom to a hazard and open its popup when the rider taps it in the

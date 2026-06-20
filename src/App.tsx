@@ -723,12 +723,14 @@ function HazardListPanel({
   return (
     <div className="hazard-list">
       <button className="hazard-list-close" onClick={onClose} aria-label="Close">
-        <X size={16} />
+        <X size={14} strokeWidth={2} />
       </button>
       <p>{routeHazards.length} unsafe stretch{routeHazards.length === 1 ? '' : 'es'} on this route</p>
-      {routeHazards.map((h, i) => (
+      {routeHazards.map((h) => (
         <button key={h.id} className="hazard-list-item" onClick={() => onPreview(h)}>
-          <span className="hazard-list-num">{i + 1}</span>
+          <span className="hazard-list-icon" aria-hidden>
+            <AlertTriangle size={15} strokeWidth={2.25} />
+          </span>
           <span className="hazard-list-note">{h.note || 'Reported as unsafe by a rider'}</span>
         </button>
       ))}
@@ -757,15 +759,17 @@ function RoutePeekBar({
         <span className="mini-route-stat">
           <span className="mini-route-num">{Math.round(route.durationMin)}</span> min
         </span>
+      </div>
+      <div className="mini-route-actions">
         {routeHazards.length > 0 && (
           <button className="hazard-flag" onClick={onToggleHazardList}>
             <AlertTriangle size={13} /> {routeHazards.length}
           </button>
         )}
+        <button className="start-ride start-ride--peek" onClick={onStartRide}>
+          <Play size={18} fill="currentColor" /> Start
+        </button>
       </div>
-      <button className="start-ride start-ride--peek" onClick={onStartRide}>
-        <Play size={18} fill="currentColor" /> Start
-      </button>
     </div>
   )
 }
